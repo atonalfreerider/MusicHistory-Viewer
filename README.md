@@ -1,14 +1,24 @@
 # MusicHistory viewer (Unity)
 
-A Unity 6000.6.3f1 URP project that shows the song influence graph (`docs/DESIGN.md` §10–§11)
-and walks through it with the music playing. It is a fork of Unity-FDG. The scene and the
+A Unity 6000.6.3f1 URP project that shows the song influence graph built by the
+[MusicHistory](../MusicHistory) pipeline (its `docs/DESIGN.md` §10–§13) and walks through it with the
+music playing. It is a fork of Unity-FDG and has its own repository; it used to live in
+`MusicHistory/unity` (history preserved). In this README, `<MusicHistory>` means that pipeline
+repository. The scene and the
 reusable pieces (TextBox, CameraControl, the tapered edge mesh and the force-directed simulation)
 keep their original script GUIDs.
 
 ## Open and run
 
-1. In Unity Hub, choose **Add project from disk** and pick this `unity/` folder. Open it with
-   **6000.6.3f1**.
+1. Put this repository next to MusicHistory (`Desktop\MusicHistory` and
+   `Desktop\MusicHistory-Viewer`). In Unity Hub, choose **Add project from disk** and pick this
+   folder. Open it with **6000.6.3f1**.
+
+   The viewer reads everything the pipeline produced (graphs, MIDI, the SoundFont, recording
+   previews) from `<MusicHistory>/data`. `MusicHistory.PipelinePaths` finds `<MusicHistory>` from,
+   in order: `-musicHistoryRoot <dir>` on the command line, the `MUSICHISTORY_ROOT` environment
+   variable, the parent of `MUSICHISTORY_DATA`, a sibling folder named `MusicHistory`, and the
+   folder above this project (the old in-repo layout).
 2. Open `Assets/Scenes/SongInfluenceGraph.unity` and press Play.
 
 The loader looks for a graph database in this order:
@@ -17,9 +27,9 @@ The loader looks for a graph database in this order:
 |---|---|
 | 1 | `-musicHistoryDb <path>` on the command line (player or editor) |
 | 2 | `DbPath` on the **MusicHistory Graph** object (inspector) |
-| 3 | `<repo>/data/graph/music_graph.db` (the pipeline's output) |
+| 3 | `<MusicHistory>/data/graph/music_graph.db` (the pipeline's output) |
 | 4 | `Assets/StreamingAssets/music_graph.db` (a DB copied next to a player build) |
-| 5 | `<repo>/data/graph/demo_graph.db` (synthetic graph from `MusicHistory.Layout demo`) |
+| 5 | `<MusicHistory>/data/graph/demo_graph.db` (synthetic graph from `MusicHistory.Layout demo`) |
 
 MIDI paths in the DB are resolved against the DB's own folder, so `../songs/<work_id>/score.mid`
 next to `data/graph/` finds `data/songs/`.
