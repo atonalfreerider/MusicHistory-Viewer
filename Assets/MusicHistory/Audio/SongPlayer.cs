@@ -429,8 +429,8 @@ namespace MusicHistory.Audio
         string ResolveSoundFontPath()
         {
             if (!string.IsNullOrWhiteSpace(SoundFontPath)) return Path.GetFullPath(SoundFontPath);
-            // <repo>/unity/Assets -> <repo>/data/soundfonts, where tools/sf3_to_sf2.py writes it.
-            string repoCopy = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", "data", "soundfonts", DefaultSoundFontName));
+            // <MusicHistory>/data/soundfonts, where tools/sf3_to_sf2.py writes it (MusicHistory.PipelinePaths).
+            string repoCopy = Path.GetFullPath(Path.Combine(MusicHistory.PipelinePaths.Data(), "soundfonts", DefaultSoundFontName));
             var candidates = new List<string>();
             string? data = Environment.GetEnvironmentVariable("MUSICHISTORY_DATA");
             if (!string.IsNullOrEmpty(data)) candidates.Add(Path.Combine(data, "soundfonts", DefaultSoundFontName));

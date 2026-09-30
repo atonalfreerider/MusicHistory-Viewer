@@ -440,7 +440,8 @@ namespace MusicHistory.Themes
                 : Path.GetFullPath(Path.Combine(dbFolder, normalized));
         }
 
-        public static string RepoRoot() => Path.GetFullPath(Path.Combine(Application.dataPath, "..", ".."));
+        /// <summary>The MusicHistory pipeline repository (see <see cref="MusicHistory.PipelinePaths"/>).</summary>
+        public static string RepoRoot() => MusicHistory.PipelinePaths.Root();
 
         /// <summary>
         /// A user-supplied path: absolute as given; relative paths are tried against the working

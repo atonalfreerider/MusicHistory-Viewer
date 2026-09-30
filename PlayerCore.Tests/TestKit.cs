@@ -44,18 +44,26 @@ namespace MusicHistory.Audio.Tests
         static SoundFont? soundFont;
         static bool searched;
 
-        /// <summary>The repository root (folder holding docs/DESIGN.md), found from the executable upwards.</summary>
+        /// <summary>
+        /// The MusicHistory pipeline repository (folder holding docs/DESIGN.md): MUSICHISTORY_ROOT,
+        /// else found from the executable upwards, either as an ancestor (the old layout, when this
+        /// project lived in MusicHistory/unity) or as a sibling folder named MusicHistory (this
+        /// viewer is now its own repository, MusicHistory-Viewer, next to it).
+        /// </summary>
         public static string RepoRoot
         {
             get
             {
+                if (Environment.GetEnvironmentVariable("MUSICHISTORY_ROOT") is string env && env.Length > 0) return env;
                 string? dir = AppContext.BaseDirectory;
                 while (dir != null)
                 {
                     if (File.Exists(Path.Combine(dir, "docs", "DESIGN.md"))) return dir;
+                    string sibling = Path.Combine(dir, "MusicHistory");
+                    if (File.Exists(Path.Combine(sibling, "docs", "DESIGN.md"))) return sibling;
                     dir = Path.GetDirectoryName(dir);
                 }
-                throw new InvalidOperationException("repository root not found");
+                throw new InvalidOperationException("MusicHistory repository not found (set MUSICHISTORY_ROOT)");
             }
         }
 

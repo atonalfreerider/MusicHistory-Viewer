@@ -20,6 +20,7 @@
   <ItemGroup>
     <Compile Include="$(AudioDir)\**\*.cs" />
     <Compile Include="$(AssetsDir)\MusicHistory\Contracts\ISongPlayer.cs" />
+    <Compile Include="$(AssetsDir)\MusicHistory\PipelinePaths.cs" />
     <Compile Include="$(AssetsDir)\MusicHistory\Playback\MorphReadout.cs" />
     <Reference Include="netstandard"><HintPath>$(UnityEditorData)\NetStandard\ref\2.1.0\netstandard.dll</HintPath></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(UnityEditorData)\Managed\UnityEngine\UnityEngine.CoreModule.dll</HintPath></Reference>
