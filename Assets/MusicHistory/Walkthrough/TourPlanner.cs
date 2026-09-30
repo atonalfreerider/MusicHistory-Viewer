@@ -18,7 +18,13 @@ namespace MusicHistory.Walkthrough
         /// Identity lineages (DESIGN.md §8b): every song of one identity family in time order —
         /// the selected edge's family, else the selected song's strongest, else the largest.
         /// </summary>
-        Family
+        Family,
+        /// <summary>
+        /// A featured path (data/audio/renders/paths.json): exactly the path's songs in order, each
+        /// played from its prerendered recording preview. Chosen from the featured-paths panel (P),
+        /// never by 1–4 or M.
+        /// </summary>
+        Path
     }
 
     /// <summary>Where a family tour plays a song: the bars where the family's identity sounds in it.</summary>
@@ -55,7 +61,8 @@ namespace MusicHistory.Walkthrough
 
         public static List<int> Plan(SongGraphData data, TourMode mode, int? fromNode)
         {
-            if (data.Songs.Count == 0) return new List<int>();
+            // Path tours are planned from the featured-paths catalog, not from the graph.
+            if (data.Songs.Count == 0 || mode == TourMode.Path) return new List<int>();
             if (mode == TourMode.Family)
                 return FamilyFor(data, fromNode, null) is int family ? Family(data, family) : new List<int>();
             int start = fromNode is int f && f >= 1 && f <= data.Songs.Count ? f : DefaultStart(data, mode);

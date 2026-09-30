@@ -90,7 +90,8 @@ namespace MusicHistory.Viewer
         {
             if (newState == state) return;
             state = newState;
-            bubbleRenderer.sharedMaterial = GraphMaterials.Bubble(KeyColor, DecadeColor, newState);
+            // Teardown: the bubble may already be destroyed (no fixed destruction order).
+            if (bubbleRenderer != null) bubbleRenderer.sharedMaterial = GraphMaterials.Bubble(KeyColor, DecadeColor, newState);
         }
 
         /// <summary>Called when the live simulation moved this node.</summary>
@@ -109,6 +110,10 @@ namespace MusicHistory.Viewer
 
         public void RefreshLabel(LabelLayer layer)
         {
+            // Teardown (scene unload, play-mode exit, a reload): the layer or this label's text box
+            // may already be destroyed. Leave the label alone then; never create one mid-teardown.
+            if (layer == null || this == null) return;
+            if (Label != null && !LabelLayer.IsAlive(Label)) return;
             bool want = LabelPinned || labelRequested;
             if (want && Label == null)
                 Label = layer.Create(LabelText, transform, transform.position, Radius, LabelPlacement.Right);

@@ -62,7 +62,10 @@ namespace MusicHistory.Viewer
             Keyboard? keyboard = Keyboard.current;
             if (keyboard != null && (keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed))
                 speed *= FastMultiplier;
-            if (mouse != null)
+            // The wheel over a clickable HUD panel (the featured-paths list) scrolls the panel instead.
+            UnityEngine.EventSystems.EventSystem? events = UnityEngine.EventSystems.EventSystem.current;
+            bool overUi = events != null && events.IsPointerOverGameObject();
+            if (mouse != null && !overUi)
             {
                 // Windows reports 120 per notch unless the Input System normalizes scroll to +-1.
                 float scroll = mouse.scroll.ReadValue().y;

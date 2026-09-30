@@ -76,11 +76,13 @@ namespace MusicHistory.Viewer
         {
             if (newState == state) return;
             state = newState;
-            meshRenderer.sharedMaterial = GraphMaterials.Edge(Channel, newState, IsTree, Tier);
+            if (meshRenderer != null) meshRenderer.sharedMaterial = GraphMaterials.Edge(Channel, newState, IsTree, Tier);
         }
 
         public void SetShown(bool shown)
         {
+            // Teardown: skip an edge that is already destroyed.
+            if (this == null) return;
             if (gameObject.activeSelf != shown) gameObject.SetActive(shown);
         }
 

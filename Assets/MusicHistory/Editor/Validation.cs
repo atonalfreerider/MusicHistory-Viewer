@@ -122,6 +122,7 @@ namespace MusicHistory.EditorTools
             if (!report.Check("graph database exists", File.Exists(dbPath), dbPath)) return;
             ValidateMainGraph(report, loader, cam, dbPath, outDir, width, height);
             ValidateLineage(report, loader, cam, outDir, width, height);
+            ValidatePaths(report, loader, cam, outDir, width, height);
 
             if (File.Exists(fixturePath)) ValidateFixture(report, loader, cam, fixturePath, outDir, width, height);
             else report.Check("fixture database exists (python tests/unity/graph_fixture.py build)", false, fixturePath);

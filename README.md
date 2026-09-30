@@ -40,6 +40,7 @@ next to `data/graph/` finds `data/songs/`.
 | Enter | Start the walkthrough from the selected song (or the selected edge's later song). With nothing selected, it starts from the deepest lineage, the largest tree, the first song, or the largest family, depending on the mode. |
 | Space · N / → · B / ← · Esc | Pause/resume · next step · previous step · leave the tour (the free camera comes back). |
 | C | Toggle "compare in C / 120 BPM": plays the normalized MIDI without the key/BPM glide. |
+| P · the "Featured paths" button (top centre) | Open the featured paths: curated walks through the graph played from recording previews (see below). |
 
 Each walkthrough step does four things:
 
@@ -51,6 +52,46 @@ Each walkthrough step does four things:
 "The song heard just before" is the clip the tour was on when the step changed, whichever way it moved: the previous step on a forward advance, the step you left on B/←, the same song on a restart (Enter, C). Only a tour's first song plays natively.
 
 The next step starts when the player raises `Finished`. When the next step plays on the same player, the director does not stop it first, so a song that ended naturally hands off on its bar line. A watchdog advances only when the player makes no progress (its beat stands still, unpaused) for `WatchdogSeconds` (20 s), so an excerpt in a section slower than the song's median tempo is never cut short.
+
+## Featured paths (recording previews)
+
+A featured path is a short, curated walk through the graph: a few songs, each sharing a musical
+identity with the one before it, played from 30-second recording previews instead of MIDI. The
+paths and their prerendered previews come from `data/audio/renders/paths.json` (version 2,
+written by the data pipeline next to the renders; `-musicHistoryPaths <file>` or the loader's
+`PathsFile` field picks another). Each step's render already starts in the key and tempo of the
+step heard before it and glides to its own over `morph_bars` bars (smoothstep), then plays
+natively; the first step plays natively. A missing `paths.json` gives an empty list that says so.
+
+**The panel.** P or the "Featured paths" button opens the list on the left, where the legend was;
+the graph is reframed beside it on the years the paths cover. Each row shows the path's title,
+subtitle, duration, song count, era and a mini timeline with one dot per song (key colour). Hover
+a row, or select one with ↑ ↓ or 1–9, and its route lights up on the graph: its songs glow and
+keep their labels, the edges between them light up, a glowing line joins them in play order, and
+everything else dims. Below the rows, the hovered (else selected) path's shared identity,
+description and songs. Click a row, press Enter or the Play button to play it; Esc closes.
+
+**While a path plays** the list collapses into a now-playing strip at the bottom: the path title,
+every step as a chip (click one to jump there), "via <identity>" with the edge kind, family size
+and a strong-match badge (z), the live glide (`Key C major → D major (now C#, +1.0 st) · BPM 120 →
+96 (now 108.2)`, "gliding" until the song is in its own key and tempo), a recording-preview badge
+(or MIDI synth / silent clock when a render is missing), and a time bar in seconds with a tick
+where the glide ends. Prev / Pause / Next / Stop, or ← → Space; Enter restarts the step; C
+compares in C / 120 BPM (MIDI); Esc stops and returns to the list. The camera flies to each song
+framed with the song heard before it, the edge between them grows, and the rest of the route stays
+lit. "The song heard before" follows the same rule as the other tours (`PreviousClip`).
+
+**Playback** (`Playback/PreviewSongPlayer.cs`). Only path tours' steps listed in `paths.json`
+play recording previews; every other tour plays MIDI as before. The player decodes the MP3 with
+UnityWebRequest (the next step is preloaded) and plays it on two AudioSources of its own child
+object, so the MeltySynth player's `OnAudioFilterRead` never touches them. `CurrentSemitones` and
+`CurrentBpm` follow the render's metadata (`start_semitones`, `start_bpm` → `bpm` over
+`morph_seconds`); progress is in seconds. On a natural advance it raises `Finished` about one
+second before the end and crossfades (equal power) into the next clip; Next and Back cut with a
+short fade; Pause and Stop fade. If no audio device advances `AudioSource.time` (batchmode, audio
+disabled) or a file fails to load, a main-thread clock keeps time, so `Finished` still fires. A file
+still loading after `LoadTimeoutSeconds` (6 s) starts on that clock, and the recording joins at the
+clock's position when it arrives.
 
 ## Identity lineages (DESIGN §8b)
 
@@ -154,7 +195,10 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Viewer/GraphMaterials.cs` | Shared material cache: 201 bubble and 10–30 edge materials for the 1000-song demo graph. No renderer owns a material. |
 | `Viewer/LabelLayer.cs`, `TextBox.cs` | Constant-screen-size world labels with priority decluttering. |
 | `Viewer/TimelineAxis.cs` | Decade axis, ticks, year labels and rings. |
-| `Viewer/HoverHighlighter.cs`, `GraphHud.cs` | Hover, song and edge selection (screen-space edge pick) and highlighting. Screen HUD: legend, song info or edge card (`Shares: …` for identity lineages), walkthrough panel. |
+| `Viewer/HoverHighlighter.cs`, `GraphHud.cs` | Hover, song and edge selection (screen-space edge pick) and highlighting, featured-path routes. Screen HUD: legend, song info or edge card (`Shares: …` for identity lineages), walkthrough panel. |
+| `Viewer/FeaturedPathsPanel.cs`, `RouteLine.cs`, `UiKit.cs` | The featured-paths button, list and now-playing strip (uGUI on the HUD canvas, EventSystem with InputSystemUIInputModule); the glowing route line; procedural rounded sprites and layout helpers. |
+| `Playback/PathCatalog.cs` | `paths.json` v2 reader (no Unity API): paths, steps, via, the glide maths, contract problems; binds work ids to songs. |
+| `Playback/PreviewSongPlayer.cs` | Recording-preview `ISongPlayer` for path tours: decode, crossfade, fades, main-thread fallback clock. |
 | `Viewer/CameraControl.cs`, `SceneLook.cs` | Free-fly camera (`InputEnabled`, `SyncRotationFromTransform`, null-safe input); gradient sky and bloom. |
 | `Walkthrough/TourPlanner.cs`, `WalkthroughDirector.cs`, `CameraFraming.cs` | Tour sequences (including the family tour's family choice, order and per-song windows), the step state machine, and perspective-correct framing that keeps the HUD clear. |
 | `Playback/SilentSongPlayer.cs` | Timer-based `ISongPlayer`: the same morph tempo maths, raises `Finished`. |
@@ -247,6 +291,28 @@ real synth and writes `playmode_family_tour.png`.
 
 Both commands exit with code 0 only when every check passes. In the editor, the same checks
 run from **MusicHistory → Run Validation**.
+
+Featured paths are checked by `Validation.Run` too (on `music_graph.db`), and on their own:
+
+```bash
+# Edit mode: the paths.json contract against the graph (work ids, via = the edge's identity,
+# start key/tempo = the step before, 44.1 kHz MPEG files), the glide readout and crossfade on the
+# preview clock, the path tour, the panel (P, 1-9, arrows, hover, Enter, strip, Esc), label
+# teardown safety, and paths_button.png, paths_panel_idle.png, paths_panel.png, paths_playing.png.
+# -validationPaths <paths.json> adds another catalog (a fixture); the real one is used when present.
+"$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.Validation.RunPaths -logFile "$PWD/paths.log"
+# Play mode: EventSystem clicks, the first render decoded (44.1 kHz, length = paths.json) after a
+# simulated slow load (clock first, then the recording joins), Pause and Stop fades, a whole path on
+# the main-thread clock (order, Finished once, crossfades), and scene teardown in varied orders
+# (the reported MissingReferenceException case included) with no exception logged.
+# -musicHistoryPaths <paths.json> picks another catalog. Writes data/screens/paths_playmode.json.
+"$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.PathsPlayMode.Run -logFile "$PWD/paths_play.log"
+# One whole path in real time on the audio device, as a listener hears it (the listener is muted):
+# per step the load latency, decoded length, clock, when Finished fired, the crossfade, the audio
+# clock against the wall clock, and the level of the decoded recording under the playhead.
+# Writes data/screens/paths_fullplay.json.
+"$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullPath -pathsPlayId orbison-to-flowers -logFile "$PWD/paths_full.log"
+```
 
 ## Lyric themes
 

@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -13,8 +14,10 @@ namespace MusicHistory.Viewer
     /// artist, year, key, BPM, main loop, parent chain, tree-edge evidence) or a clicked edge's
     /// card, and the walkthrough panel (bottom). For identity lineages (DESIGN.md §8b) edges read
     /// "Shares: &lt;identity&gt; · family of N songs" (plus "strong match (z …)"), never bits.
-    /// Nothing is clickable, so no EventSystem is needed. All strings from the database are
-    /// shown inside noparse tags; the database never holds lyrics.
+    /// These panels are not clickable (raycastTarget off); the canvas's GraphicRaycaster serves the
+    /// featured-paths panel (<see cref="FeaturedPathsPanel"/>), whose rects join
+    /// <see cref="PanelScreenRects"/> through <see cref="ExtraPanels"/>. All strings from the
+    /// database are shown inside noparse tags; the database never holds lyrics.
     /// </summary>
     public sealed class GraphHud : MonoBehaviour
     {
@@ -43,12 +46,19 @@ namespace MusicHistory.Viewer
         public bool InfoVisible => info.Root.activeSelf;
         public string TourText => tour.Text.text;
         public string LegendText => legend.Text.text;
+        /// <summary>The legend panel is showing (the featured-paths list replaces it while open).</summary>
+        public bool LegendVisible => legend.Root.activeSelf;
+        /// <summary>The walkthrough panel at the bottom is showing.</summary>
+        public bool TourVisible => tour.Root.activeSelf;
         public Canvas Canvas => canvas;
+        /// <summary>More panels on this canvas that world labels keep clear of (point-anchored, active ones count).</summary>
+        [NonSerialized] public Func<IReadOnlyList<RectTransform>>? ExtraPanels;
+        bool legendHidden;
 
         public void Build(SongGraphLoader owner)
         {
             loader = owner;
-            GameObject canvasObject = new("MusicHistory HUD", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler));
+            GameObject canvasObject = new("MusicHistory HUD", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             canvasObject.transform.SetParent(transform, false);
             canvas = canvasObject.GetComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -148,6 +158,14 @@ namespace MusicHistory.Viewer
             RefreshLegend();
         }
 
+        /// <summary>Hides the legend (the featured-paths list takes its place) or shows it again.</summary>
+        public void SetLegendVisible(bool visible)
+        {
+            if (legendHidden == !visible) return;
+            legendHidden = !visible;
+            RefreshLegend();
+        }
+
         void RefreshLegend()
         {
             bool lineage = loader != null && loader.Data != null && loader.Data.IsIdentityLineage;
@@ -156,9 +174,10 @@ namespace MusicHistory.Viewer
                       ? $"\n<color={Muted}>Mouse</color>  hover shows shared identities · click selects a song or an edge · right-drag looks · wheel dollies"
                       : $"\n<color={Muted}>Mouse</color>  hover shows influences · click selects · right-drag looks · wheel dollies") +
                   $"\n<color={Muted}>Move</color>  W A S D, Q E (Shift = fast) · R reset view · L all labels · V secondary edges · F live layout (time locked) · T lyric themes" +
-                  $"\n<color={Muted}>Walkthrough</color>  1 lineage · 2 subtree · 3 chronological{(lineage ? " · 4 family" : "")} · M next mode · Enter start · Space pause · N/→ next · B/← back · Esc exit · C compare in C / 120 BPM"
-                : $"\n<color={Muted}>H</color> controls";
-            SetText(legend, legendBody + help);
+                  $"\n<color={Muted}>Walkthrough</color>  1 lineage · 2 subtree · 3 chronological{(lineage ? " · 4 family" : "")} · M next mode · Enter start · Space pause · N/→ next · B/← back · Esc exit · C compare in C / 120 BPM" +
+                  $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back"
+                : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths";
+            SetText(legend, legendHidden ? "" : legendBody + help);
         }
 
         public void ShowSong(SongNode? node) => SetText(info, node == null ? "" : SongInfo(node));
@@ -330,16 +349,41 @@ namespace MusicHistory.Viewer
             float w = Mathf.Max(1, width), h = Mathf.Max(1, height);
             Vector2 reference = canvasScaler.referenceResolution;
             float scale = Mathf.Pow(2f, Mathf.Lerp(Mathf.Log(w / reference.x, 2f), Mathf.Log(h / reference.y, 2f), canvasScaler.matchWidthOrHeight));
-            AddPanelRect(legend, w, h, scale);
-            AddPanelRect(info, w, h, scale);
-            AddPanelRect(tour, w, h, scale);
+            AddPanelRect(legend.Rect, w, h, scale);
+            AddPanelRect(info.Rect, w, h, scale);
+            AddPanelRect(tour.Rect, w, h, scale);
+            if (ExtraPanels != null)
+            {
+                IReadOnlyList<RectTransform> extra = ExtraPanels();
+                for (int i = 0; i < extra.Count; i++) AddPanelRect(extra[i], w, h, scale);
+            }
             return panelRects;
         }
 
-        void AddPanelRect(Panel p, float w, float h, float scale)
+        /// <summary>
+        /// Canvas scale factor for a <paramref name="width"/> x <paramref name="height"/> screen
+        /// (CanvasScaler scale-with-screen-size, as the panels are laid out).
+        /// </summary>
+        public float ScaleFor(float width, float height)
         {
-            if (!p.Root.activeSelf) return;
-            RectTransform r = p.Rect;
+            if (canvasScaler == null) return 1f;
+            Vector2 reference = canvasScaler.referenceResolution;
+            return Mathf.Pow(2f, Mathf.Lerp(Mathf.Log(Mathf.Max(1, width) / reference.x, 2f), Mathf.Log(Mathf.Max(1, height) / reference.y, 2f), canvasScaler.matchWidthOrHeight));
+        }
+
+        /// <summary>Screen rect (pixels, origin bottom-left) of a point-anchored rect on this canvas.</summary>
+        public Rect ScreenRect(RectTransform r, float width, float height)
+        {
+            float scale = ScaleFor(width, height);
+            Vector2 size = r.sizeDelta * scale;
+            Vector2 anchor = new(r.anchorMin.x * width, r.anchorMin.y * height);
+            Vector2 min = anchor + r.anchoredPosition * scale - Vector2.Scale(r.pivot, size);
+            return new Rect(min, size);
+        }
+
+        void AddPanelRect(RectTransform r, float w, float h, float scale)
+        {
+            if (r == null || !r.gameObject.activeInHierarchy) return;
             Vector2 size = r.sizeDelta * scale;
             Vector2 anchor = new(r.anchorMin.x * w, r.anchorMin.y * h);
             Vector2 min = anchor + r.anchoredPosition * scale - Vector2.Scale(r.pivot, size);
@@ -365,8 +409,9 @@ namespace MusicHistory.Viewer
 
         public void ForceUpdate()
         {
-            foreach (Panel p in new[] { legend, info, tour })
-                if (p.Root.activeSelf) p.Text.ForceMeshUpdate();
+            // Every text on the canvas (the featured-paths panel's too), for edit-mode captures.
+            foreach (TMP_Text t in canvas.GetComponentsInChildren<TMP_Text>(false))
+                t.ForceMeshUpdate();
             Canvas.ForceUpdateCanvases();
         }
     }

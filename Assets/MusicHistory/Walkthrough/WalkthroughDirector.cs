@@ -28,6 +28,12 @@ namespace MusicHistory.Walkthrough
     /// time order — the clicked edge's family, else the clicked song's strongest — each at the
     /// bars where the identity sounds in it (<see cref="TourPlanner.Window"/>), morphing from the
     /// song heard before exactly like the other modes.
+    ///
+    /// Path mode (<see cref="StartPathTour"/>, from the featured-paths panel) plays exactly the
+    /// steps of one featured path (data/audio/renders/paths.json) in order. Each step plays its
+    /// prerendered recording preview (<see cref="PreviewSongPlayer"/>), which already starts in the
+    /// previous step's key and tempo and glides to its own; a step whose render is missing, and
+    /// "compare" (C), play the MIDI instead. Recording previews are used for nothing else.
     /// </summary>
     public sealed class WalkthroughDirector : MonoBehaviour
     {
@@ -75,6 +81,20 @@ namespace MusicHistory.Walkthrough
         public SongNode? StepPartner { get; private set; }
         /// <summary>Family tours: where the current song plays (own excerpt, edge span or first visit).</summary>
         public FamilyWindow? CurrentWindow { get; private set; }
+        /// <summary>The featured paths (data/audio/renders/paths.json); empty when the file is missing.</summary>
+        public PathCatalog Catalog { get; private set; } = PathCatalog.Empty("not loaded");
+        /// <summary>The featured path a path tour plays (null for the other modes).</summary>
+        public FeaturedPath? CurrentPath { get; private set; }
+        /// <summary>The current path's songs and edges on the graph.</summary>
+        public GraphRoute? CurrentRoute { get; private set; }
+        /// <summary>The path step playing (path tours only).</summary>
+        public PathStep? CurrentPathStep =>
+            Mode == TourMode.Path && CurrentPath != null && IsTouring && StepIndex >= 0 && StepIndex < CurrentPath.Steps.Count
+                ? CurrentPath.Steps[StepIndex] : null;
+        /// <summary>True while another component (the featured-paths panel) owns the keyboard.</summary>
+        [NonSerialized] public Func<bool>? KeyboardCaptured;
+        /// <summary>Raised when a tour starts or ends.</summary>
+        public event Action? TourChanged;
 
         List<int> steps = new();
         Vector3 flyFromPosition, flyToPosition;
@@ -87,9 +107,11 @@ namespace MusicHistory.Walkthrough
         // Safety net for a synth that stops without raising Finished: time without beat progress.
         double stallSeconds;
         double lastProgressBeat = double.NegativeInfinity;
-        (TourMode, SongNode?, InfluenceEdge?, bool, string) idleKey;
+        (TourMode, SongNode?, InfluenceEdge?, bool, string, bool) idleKey;
         bool idleKeyValid;
         const float HudInterval = 1f / 12f;
+        // The mode to return to after a path tour (path tours are started from the panel).
+        TourMode modeBeforePath = TourMode.Lineage;
 
         public void Initialize(SongGraphLoader loader)
         {
@@ -102,6 +124,7 @@ namespace MusicHistory.Walkthrough
             Silent.Finished += OnClipFinished;
             Preview = GetComponent<PreviewSongPlayer>();
             if (Preview == null) Preview = gameObject.AddComponent<PreviewSongPlayer>();
+            Preview.Catalog = Catalog;
             Preview.Finished -= OnClipFinished;
             Preview.Finished += OnClipFinished;
             if (Player != null && !ReferenceEquals(Player, Silent))
@@ -113,6 +136,14 @@ namespace MusicHistory.Walkthrough
                     System.Globalization.CultureInfo.InvariantCulture, out double target) && target > 0)
                 Silent.TargetBpm = target;
             RefreshIdleHud(true);
+        }
+
+        /// <summary>The featured paths path tours play (the loader binds it to the graph first).</summary>
+        public void UseCatalog(PathCatalog catalog)
+        {
+            Catalog = catalog ?? PathCatalog.Empty("none");
+            if (Preview != null) Preview.Catalog = Catalog;
+            if (IsTouring && Mode == TourMode.Path) Exit();
         }
 
         /// <summary>
@@ -150,6 +181,8 @@ namespace MusicHistory.Walkthrough
         {
             Keyboard? k = Keyboard.current;
             if (k == null || Loader == null || Loader.Data == null) return;
+            // The featured-paths panel handles its own keys (list open, or a path tour playing).
+            if (KeyboardCaptured != null && KeyboardCaptured()) return;
             if (!IsTouring)
             {
                 if (k.digit1Key.wasPressedThisFrame || k.numpad1Key.wasPressedThisFrame) Mode = TourMode.Lineage;
@@ -166,12 +199,22 @@ namespace MusicHistory.Walkthrough
             if (k.spaceKey.wasPressedThisFrame) TogglePause();
             if (k.nKey.wasPressedThisFrame || k.rightArrowKey.wasPressedThisFrame) Next();
             if (k.bKey.wasPressedThisFrame || k.leftArrowKey.wasPressedThisFrame) Previous();
-            if (k.cKey.wasPressedThisFrame)
-            {
-                ApplesToApples = !ApplesToApples;
-                GoTo(StepIndex);
-            }
+            if (k.cKey.wasPressedThisFrame) ToggleApplesToApples();
             if (k.enterKey.wasPressedThisFrame || k.numpadEnterKey.wasPressedThisFrame) GoTo(StepIndex);
+        }
+
+        /// <summary>Redraws the walkthrough panel now (the paths panel opened or closed).</summary>
+        public void RefreshHud()
+        {
+            if (IsTouring) UpdateTourHud();
+            else RefreshIdleHud(true);
+        }
+
+        /// <summary>C: toggles "compare in C / 120 BPM" (MIDI, no morph); a running tour restarts its step.</summary>
+        public void ToggleApplesToApples()
+        {
+            ApplesToApples = !ApplesToApples;
+            if (IsTouring) GoTo(StepIndex);
         }
 
         public bool StartTour(TourMode mode, SongNode? from) => StartTour(mode, from, null);
@@ -184,6 +227,17 @@ namespace MusicHistory.Walkthrough
         {
             if (Loader.Data == null) return false;
             if (from == null && edge != null) from = edge.Target;
+            if (mode == TourMode.Path)
+            {
+                // The first playable path through the song, else the first playable path.
+                FeaturedPath? chosen = null;
+                foreach (FeaturedPath p in Catalog.Paths)
+                    if (p.IsPlayable && chosen == null && (from == null || p.Steps.Exists(st => st.NodeId == from.NodeId))) chosen = p;
+                if (chosen == null)
+                    foreach (FeaturedPath p in Catalog.Paths)
+                        if (p.IsPlayable && chosen == null) chosen = p;
+                return chosen != null && StartPathTour(chosen);
+            }
             if (mode == TourMode.Family)
                 return TourPlanner.FamilyFor(Loader.Data, from != null ? from.NodeId : null, edge?.Record) is int family && StartFamilyTour(family);
             return Begin(mode, TourPlanner.Plan(Loader.Data, mode, from != null ? from.NodeId : null), null);
@@ -196,9 +250,33 @@ namespace MusicHistory.Walkthrough
             return Begin(TourMode.Family, TourPlanner.Family(Loader.Data, familyId), familyId);
         }
 
+        /// <summary>
+        /// Plays the steps of featured path <paramref name="path"/> in order (each from its recording
+        /// preview when the render exists). False when a step's song is not in the graph.
+        /// </summary>
+        public bool StartPathTour(FeaturedPath path)
+        {
+            if (Loader.Data == null || path == null || !path.IsPlayable) return false;
+            List<int> planned = new();
+            foreach (PathStep step in path.Steps)
+            {
+                if (step.NodeId < 1 || step.NodeId > Loader.Nodes.Count) return false;
+                planned.Add(step.NodeId);
+            }
+            if (Mode != TourMode.Path) modeBeforePath = Mode;
+            CurrentPath = path;
+            CurrentRoute = Loader.RouteFor(path);
+            return Begin(TourMode.Path, planned, null);
+        }
+
         bool Begin(TourMode mode, List<int> planned, int? familyId)
         {
             if (planned.Count == 0) return false;
+            if (mode != TourMode.Path)
+            {
+                CurrentPath = null;
+                CurrentRoute = null;
+            }
             Mode = mode;
             FamilyId = familyId;
             steps = planned;
@@ -208,6 +286,7 @@ namespace MusicHistory.Walkthrough
             PreviousClip = null;
             SetCameraInput(false);
             GoTo(0);
+            TourChanged?.Invoke();
             return true;
         }
 
@@ -226,7 +305,14 @@ namespace MusicHistory.Walkthrough
             SongNode? parent = child.TreeParent;
             InfluenceEdge? stepEdge = child.TreeEdge;
             CurrentWindow = null;
-            if (Mode == TourMode.Family && FamilyId is int family && Loader.Data != null)
+            if (Mode == TourMode.Path && CurrentRoute != null)
+            {
+                // The song heard before on the path is framed beside this one; the route stays lit.
+                parent = StepIndex > 0 ? Loader.NodeById(steps[StepIndex - 1]) : null;
+                stepEdge = StepIndex < CurrentRoute.StepEdges.Count ? CurrentRoute.StepEdges[StepIndex] : null;
+                Loader.Highlighter.ShowPathStep(child, parent, stepEdge, CurrentRoute);
+            }
+            else if (Mode == TourMode.Family && FamilyId is int family && Loader.Data != null)
             {
                 // The previous song of the family (time order) is framed beside this one; the
                 // family's edge into this song lights up (from that song when there is one).
@@ -274,7 +360,8 @@ namespace MusicHistory.Walkthrough
             {
                 chosen.MorphBars = MorphBars;
                 chosen.ApplesToApples = ApplesToApples;
-                chosen.Play(CurrentClip, PreviousClip!);
+                if (ReferenceEquals(chosen, Preview) && CurrentPathStep is PathStep pathStep) Preview!.PlayStep(pathStep, CurrentClip);
+                else chosen.Play(CurrentClip, PreviousClip!);
             }
             catch (Exception e)
             {
@@ -295,14 +382,31 @@ namespace MusicHistory.Walkthrough
                 Silent.ApplesToApples = ApplesToApples;
                 Silent.Play(CurrentClip, PreviousClip);
             }
+            // Decode the next recording now, so the crossfade into it starts on time.
+            if (Mode == TourMode.Path && CurrentPath != null && Preview != null && StepIndex + 1 < CurrentPath.Steps.Count)
+                Preview.Preload(CurrentPath.Steps[StepIndex + 1]);
             UpdateTourHud();
         }
 
-        /// <summary>The real player when this clip's file exists, else the silent clock.</summary>
+        /// <summary>Re-applies the current step's highlighting (after V toggles the secondary edges).</summary>
+        public void RefreshStepHighlight()
+        {
+            if (!IsTouring || CurrentClip == null) return;
+            SongNode child = Loader.NodeById(CurrentClip.NodeId);
+            if (Mode == TourMode.Path && CurrentRoute != null) Loader.Highlighter.ShowPathStep(child, StepPartner, StepEdge, CurrentRoute);
+            else if (Mode == TourMode.Family && FamilyId is int family) Loader.Highlighter.ShowTourStep(child, StepPartner, StepEdge, family);
+            else Loader.Highlighter.ShowTourStep(child, StepPartner);
+        }
+
+        /// <summary>
+        /// A path tour's step with its render: the recording preview. Otherwise the real player when
+        /// this clip's MIDI file exists, else the silent clock.
+        /// </summary>
         ISongPlayer ChoosePlayer(SongClip clip)
         {
-            // A prerendered preview of the recording wins when one exists for this exact step.
-            if (!ApplesToApples && Preview != null && Preview.Has(PreviousClip, clip)) return Preview;
+            // Recording previews play only the steps listed in paths.json, on a path tour.
+            if (Mode == TourMode.Path && !ApplesToApples && Preview != null && CurrentPathStep is PathStep step &&
+                step.NodeId == clip.NodeId && step.FileExists) return Preview;
             string? path = ApplesToApples && !string.IsNullOrEmpty(clip.NormalizedMidiPath) ? clip.NormalizedMidiPath : clip.MidiPath;
             bool fileExists = !string.IsNullOrEmpty(path) && File.Exists(path);
             if (Player != null && !ReferenceEquals(Player, Silent) && fileExists) return Player;
@@ -350,11 +454,15 @@ namespace MusicHistory.Walkthrough
             StepEdge = null;
             StepPartner = null;
             CurrentWindow = null;
+            CurrentPath = null;
+            CurrentRoute = null;
+            if (Mode == TourMode.Path) Mode = modeBeforePath;
             Loader.Highlighter.EndTour();
             if (Loader.Highlighter.FocusEdge != null) Loader.Hud.ShowEdge(Loader.Highlighter.FocusEdge);
             else Loader.Hud.ShowSong(Loader.Highlighter.Focus);
             SetCameraInput(true);
             RefreshIdleHud(true);
+            TourChanged?.Invoke();
         }
 
         void SetCameraInput(bool enabled)
@@ -446,6 +554,11 @@ namespace MusicHistory.Walkthrough
         void UpdateTourHud()
         {
             if (CurrentClip == null || steps.Count == 0) return;
+            if (Mode == TourMode.Path && CurrentPath != null)
+            {
+                UpdatePathHud();
+                return;
+            }
             SongNode child = Loader.NodeById(CurrentClip.NodeId);
             // The framed partner: the tree parent, or the family's previous song on a family tour.
             SongNode? parent = StepPartner;
@@ -528,10 +641,18 @@ namespace MusicHistory.Walkthrough
             if (Loader == null || Loader.Hud == null || Loader.Data == null) return;
             SongNode? selected = Loader.Highlighter != null ? Loader.Highlighter.Selected : null;
             InfluenceEdge? selectedEdge = Loader.Highlighter != null ? Loader.Highlighter.SelectedEdge : null;
-            (TourMode, SongNode?, InfluenceEdge?, bool, string) key = (Mode, selected, selectedEdge, ApplesToApples, PlayerDescription);
+            bool pathsOpen = Loader.Paths != null && Loader.Paths.IsOpen;
+            (TourMode, SongNode?, InfluenceEdge?, bool, string, bool) key = (Mode, selected, selectedEdge, ApplesToApples, PlayerDescription, pathsOpen);
             if (!force && idleKeyValid && key.Equals(idleKey)) return;
             idleKey = key;
             idleKeyValid = true;
+            if (pathsOpen)
+            {
+                // The featured-paths panel owns Enter and the digits while it is open.
+                HudText = "";
+                Loader.Hud.ShowTour("", 0f, Color.clear);
+                return;
+            }
             SongNode? start = selected != null ? selected : selectedEdge != null ? selectedEdge.Target : null;
             string from = Mode == TourMode.Family
                 ? FamilyIdleText(Loader.Data, selected, selectedEdge)
@@ -565,5 +686,127 @@ namespace MusicHistory.Walkthrough
         }
 
         static string Fmt(double v, string format) => v.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
+
+        // ------------------------------------------------------------------ path tours
+
+        /// <summary>What the step sounds like right now, for the path HUD (seconds for recordings, beats for MIDI).</summary>
+        public readonly struct StepReadout
+        {
+            public readonly bool Valid;
+            /// <summary>A recording preview plays (else the MIDI synth or the silent clock).</summary>
+            public readonly bool Recording;
+            public readonly string Player;
+            /// <summary>Key the step starts in (the song heard before, as heard), its own key, and the key sounding now.</summary>
+            public readonly string StartKey, Key, NowKey;
+            public readonly double StartSemitones, NowSemitones;
+            public readonly double StartBpm, Bpm, NowBpm;
+            /// <summary>Glide progress 0..1 (1 = the song's own key and tempo).</summary>
+            public readonly double Glide;
+            /// <summary>Position and length: seconds when <see cref="InSeconds"/>, else beats.</summary>
+            public readonly double Position, Length;
+            public readonly bool InSeconds;
+            /// <summary>"audio" (measured from the recording) or "midi" (paths.json key_source / bpm_source).</summary>
+            public readonly string KeySource, BpmSource;
+
+            public StepReadout(bool recording, string player, string startKey, string key, string nowKey,
+                double startSemitones, double nowSemitones, double startBpm, double bpm, double nowBpm, double glide,
+                double position, double length, bool inSeconds, string keySource, string bpmSource)
+            {
+                Valid = true;
+                Recording = recording;
+                Player = player;
+                StartKey = startKey;
+                Key = key;
+                NowKey = nowKey;
+                StartSemitones = startSemitones;
+                NowSemitones = nowSemitones;
+                StartBpm = startBpm;
+                Bpm = bpm;
+                NowBpm = nowBpm;
+                Glide = glide;
+                Position = position;
+                Length = length;
+                InSeconds = inSeconds;
+                KeySource = keySource;
+                BpmSource = bpmSource;
+            }
+
+            public double Progress => Length > 0 ? Math.Max(0, Math.Min(1, Position / Length)) : 0;
+        }
+
+        public string ActivePlayerName
+        {
+            get
+            {
+                ISongPlayer? p = ActivePlayer;
+                if (p == null) return "";
+                if (ReferenceEquals(p, Preview)) return "recording preview";
+                if (ReferenceEquals(p, Silent))
+                    return Player != null && !ReferenceEquals(Player, Silent) ? "silent (MIDI file missing)" : "silent (no synth)";
+                return ApplesToApples ? "synth (compare in C / 120 BPM)" : "synth";
+            }
+        }
+
+        /// <summary>The current step's key/BPM transition and position (the HUD and validation read the same numbers).</summary>
+        public StepReadout Readout()
+        {
+            SongClip? clip = CurrentClip;
+            ISongPlayer? p = ActivePlayer;
+            if (clip == null || p == null) return default;
+            if (p is PreviewSongPlayer preview && preview.CurrentStep is PathStep s)
+            {
+                double semis = preview.CurrentSemitones;
+                string now = KeyText.TryParse(s.Key, out int pc, out bool minor)
+                    ? SongPalette.KeyName(pc + (int)Math.Round(semis), minor)
+                    : s.Key;
+                return new StepReadout(true, ActivePlayerName, s.Glides ? s.StartKey : s.Key, s.Key, now,
+                    s.EntrySemitones, semis, s.EntryBpm, s.Bpm, preview.CurrentBpm, preview.GlideProgress,
+                    preview.CurrentSeconds, preview.DurationSeconds, true, s.KeySource, s.BpmSource);
+            }
+            double length = Math.Max(1e-6, clip.ExcerptEndBeat - clip.ExcerptStartBeat);
+            double into = Math.Max(0, Math.Min(length, p.CurrentBeat - clip.ExcerptStartBeat));
+            if (ApplesToApples)
+            {
+                string normalized = NormalizedKeyName(clip);
+                SongNode node = Loader.NodeById(clip.NodeId);
+                return new StepReadout(false, ActivePlayerName, node.Song.KeyName, normalized, normalized, 0, 0,
+                    Silent.TargetBpm, Silent.TargetBpm, Silent.TargetBpm, 1, into, length, false, "midi", "midi");
+            }
+            MorphPlan plan = CurrentPlan;
+            int entryTonic = clip.EntryTonic;
+            bool entryMinor = clip.EntryIsMinor;
+            double startBpm = p is IMorphReadout readout && readout.PlanStartBpm > 0 ? readout.PlanStartBpm : clip.NativeBpm * plan.StartTempoRatio;
+            double nowSemis = p.CurrentSemitones;
+            return new StepReadout(false, ActivePlayerName,
+                SongPalette.KeyName(entryTonic + (int)Math.Round(plan.StartSemitones), entryMinor),
+                SongPalette.KeyName(entryTonic, entryMinor),
+                SongPalette.KeyName(entryTonic + (int)Math.Round(nowSemis), entryMinor),
+                plan.StartSemitones, nowSemis, startBpm, clip.NativeBpm, p.CurrentBpm, plan.Progress(into),
+                into, length, false, "midi", "midi");
+        }
+
+        /// <summary>Path tours: the panel's now-playing strip replaces the bottom walkthrough panel.</summary>
+        void UpdatePathHud()
+        {
+            FeaturedPath path = CurrentPath!;
+            SongClip clip = CurrentClip!;
+            StepReadout r = Readout();
+            PathStep? step = StepIndex < path.Steps.Count ? path.Steps[StepIndex] : null;
+            string state = TourComplete ? "complete" : ActivePlayer != null && ActivePlayer.Paused ? "paused" : "playing";
+            string from = StepPartner != null ? $"{StepPartner.Song.Title} ({StepPartner.Song.Year}) → " : "";
+            SongNode child = Loader.NodeById(clip.NodeId);
+            string via = step?.Via is PathVia v
+                ? $"\nvia {v.Identity}{(v.Strong ? $" · strong match (z {Fmt(v.Z, "0.0")})" : "")}"
+                : "\nfirst song: plays in its own key and tempo";
+            string position = r.InSeconds
+                ? $"{PathCatalog.Clock(r.Position)} / {PathCatalog.Clock(r.Length)}"
+                : $"beat {Fmt(r.Position, "0.0")}/{Fmt(r.Length, "0")}";
+            HudText = $"PATH · {path.Title} · step {StepIndex + 1}/{steps.Count} · {state} · {r.Player}\n" +
+                      $"{from}{child.Song.Title} ({child.Song.Year}) · {child.Song.Artist}{via}\n" +
+                      $"Key {r.StartKey} → {r.Key} (now {r.NowKey}, {Fmt(r.NowSemitones, "+0.0;-0.0;0.0")} st)" +
+                      $" · BPM {Fmt(r.StartBpm, "0.#")} → {Fmt(r.Bpm, "0.#")} (now {Fmt(r.NowBpm, "0.0")}) · {position}";
+            Loader.Hud.ShowTour("", 0f, Color.clear);
+            if (Loader.Paths != null) Loader.Paths.RefreshNowPlaying();
+        }
     }
 }

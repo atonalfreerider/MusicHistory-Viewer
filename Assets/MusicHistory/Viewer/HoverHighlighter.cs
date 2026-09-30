@@ -8,6 +8,33 @@ using UnityEngine.InputSystem;
 namespace MusicHistory.Viewer
 {
     /// <summary>
+    /// A featured path drawn on the graph (docs/DESIGN.md §11): its songs in play order and the
+    /// graph edges between consecutive songs.
+    /// </summary>
+    public sealed class GraphRoute
+    {
+        /// <summary>What the route draws (the featured path).</summary>
+        public readonly object Key;
+        public readonly List<SongNode> Nodes = new();
+        /// <summary>Edges between consecutive songs that exist in the graph.</summary>
+        public readonly List<InfluenceEdge> Edges = new();
+        /// <summary>Per step: the edge from the song before (null for the first step, or when the graph has none).</summary>
+        public readonly List<InfluenceEdge?> StepEdges = new();
+        /// <summary>Colour of the route's main shared identity (the channel colour of its edges).</summary>
+        public Color Color = Color.white;
+
+        public GraphRoute(object key) => Key = key;
+
+        /// <summary>The graph edge between two songs, either direction (null when there is none).</summary>
+        public static InfluenceEdge? Between(SongNode a, SongNode b)
+        {
+            foreach (InfluenceEdge e in b.Incoming) if (e.Source == a) return e;
+            foreach (InfluenceEdge e in a.Incoming) if (e.Source == b) return e;
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Hover and click selection (fork of Unity-FDG's MouseBubbleHighlighter). The focus song
     /// glows, its influencers and influenced songs glow faintly, everything else dims; the focus'
     /// secondary edges appear (they are hidden otherwise) and its edges light up. A click selects
@@ -15,7 +42,9 @@ namespace MusicHistory.Viewer
     /// <see cref="EdgePickPixels"/> of a drawn edge selects the edge (its card, and the family a
     /// family tour plays); clicking empty space clears both.
     /// The walkthrough takes over with <see cref="ShowTourStep"/> and gives it back with
-    /// <see cref="EndTour"/>.
+    /// <see cref="EndTour"/>. While the featured-paths panel is open, the hovered or selected
+    /// path's route rests on the graph (<see cref="SetRoutePreview"/>): its songs and edges glow,
+    /// everything else dims; hovering a song still shows that song.
     /// </summary>
     public sealed class HoverHighlighter : MonoBehaviour
     {
@@ -35,6 +64,10 @@ namespace MusicHistory.Viewer
         public InfluenceEdge? FocusEdge { get; private set; }
         /// <summary>True while the walkthrough owns highlighting.</summary>
         public bool Suspended { get; private set; }
+        /// <summary>The route shown when nothing is hovered (the paths panel's hovered or selected path).</summary>
+        public GraphRoute? RoutePreview { get; private set; }
+        /// <summary>The route drawn right now (null while a song or an edge is in focus).</summary>
+        public GraphRoute? FocusRoute { get; private set; }
         public event Action<SongNode?>? FocusChanged;
         public event Action<InfluenceEdge>? EdgeFocusChanged;
 
@@ -60,6 +93,14 @@ namespace MusicHistory.Viewer
             }
 
             Vector2 pointer = mouse.position.ReadValue();
+            if (Loader.Paths != null && Loader.Paths.ContainsScreenPoint(pointer))
+            {
+                // Over the paths panel: no picking through it, and its clicks select nothing here.
+                Hovered = null;
+                pressed = false;
+                ApplyResting();
+                return;
+            }
             Hovered = Pick(cam, pointer);
 
             if (mouse.leftButton.wasPressedThisFrame)
@@ -82,11 +123,50 @@ namespace MusicHistory.Viewer
             else ApplyResting();
         }
 
-        /// <summary>Without a hover: the selected edge's card, else the selected song (or nothing).</summary>
-        void ApplyResting()
+        /// <summary>Without a hover: the previewed route, else the selected edge's card, else the selected song (or nothing).</summary>
+        void ApplyResting(bool force = false)
         {
-            if (SelectedEdge != null) ApplyEdgeFocus(SelectedEdge);
-            else ApplyFocus(Selected);
+            if (RoutePreview != null) ApplyRoute(RoutePreview, force);
+            else if (SelectedEdge != null) ApplyEdgeFocus(SelectedEdge, force);
+            else ApplyFocus(Selected, force);
+        }
+
+        /// <summary>
+        /// The route that rests on the graph while nothing is hovered (null = none): the paths
+        /// panel's hovered row, else its selected row.
+        /// </summary>
+        public void SetRoutePreview(GraphRoute? route)
+        {
+            if (ReferenceEquals(route, RoutePreview)) return;
+            RoutePreview = route;
+            if (Suspended || Hovered != null) return;
+            ApplyResting(force: true);
+        }
+
+        /// <summary>A route: its songs glow and its edges light up (secondary ones appear); the rest dims.</summary>
+        public void ApplyRoute(GraphRoute route, bool force = false)
+        {
+            if (!force && applied && FocusRoute == route) return;
+            applied = true;
+            Focus = null;
+            FocusEdge = null;
+            FocusRoute = route;
+            HashSet<SongNode> onRoute = new(route.Nodes);
+            HashSet<InfluenceEdge> routeEdges = new(route.Edges);
+            foreach (SongNode n in Loader.Nodes)
+                n.SetState(onRoute.Contains(n) ? BubbleState.Focus : BubbleState.Dimmed);
+            foreach (InfluenceEdge e in Loader.Edges)
+            {
+                bool on = routeEdges.Contains(e);
+                e.SetState(on ? EdgeState.Highlight : EdgeState.Dimmed);
+                e.SetShown(e.IsTree || on || Loader.ShowAllSecondaryEdges);
+            }
+            // Only the route's songs keep labels (the rest dims away), and a glowing line joins them in
+            // play order, so the path reads at overview scale.
+            Loader.Labels.HideDimmed = true;
+            SetExtraLabels(route.Nodes);
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(route);
+            FocusChanged?.Invoke(null);
         }
 
         /// <summary>
@@ -167,6 +247,9 @@ namespace MusicHistory.Viewer
             applied = true;
             Focus = null;
             FocusEdge = edge;
+            FocusRoute = null;
+            Loader.Labels.HideDimmed = Suspended;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
             SongGraphData? data = Loader.Data;
             int? family = edge.Record.FamilyId;
             HashSet<int> members = new();
@@ -188,10 +271,13 @@ namespace MusicHistory.Viewer
         /// <summary>Highlights <paramref name="focus"/> with its influencers and influenced songs (null = none).</summary>
         public void ApplyFocus(SongNode? focus, bool force = false)
         {
-            if (!force && applied && focus == Focus && FocusEdge == null) return;
+            if (!force && applied && focus == Focus && FocusEdge == null && FocusRoute == null) return;
             applied = true;
             Focus = focus;
             FocusEdge = null;
+            FocusRoute = null;
+            if (Loader.Labels != null) Loader.Labels.HideDimmed = Suspended;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
             IReadOnlyList<SongNode> nodes = Loader.Nodes;
             IReadOnlyList<InfluenceEdge> edges = Loader.Edges;
 
@@ -246,7 +332,9 @@ namespace MusicHistory.Viewer
             Hovered = null;
             Focus = child;
             FocusEdge = null;
+            FocusRoute = null;
             applied = true;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
             HashSet<int> members = new();
             if (Loader.Data?.Family(familyId) is IdentityFamily f)
                 foreach (FamilyMember m in f.Members) members.Add(m.NodeId);
@@ -267,6 +355,36 @@ namespace MusicHistory.Viewer
             FocusChanged?.Invoke(child);
         }
 
+        /// <summary>
+        /// Path tour step: the playing song glows, the song heard before glows faintly, the rest of
+        /// the route stays undimmed with its edges lit, everything else fades; every song of the
+        /// route keeps its label.
+        /// </summary>
+        public void ShowPathStep(SongNode child, SongNode? previous, InfluenceEdge? stepEdge, GraphRoute route)
+        {
+            Suspended = true;
+            Loader.Labels.HideDimmed = true;
+            Hovered = null;
+            Focus = child;
+            FocusEdge = null;
+            FocusRoute = null;
+            applied = true;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
+            HashSet<SongNode> onRoute = new(route.Nodes);
+            HashSet<InfluenceEdge> routeEdges = new(route.Edges);
+            foreach (SongNode n in Loader.Nodes)
+                n.SetState(n == child ? BubbleState.Focus : n == previous ? BubbleState.Related
+                    : onRoute.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
+            foreach (InfluenceEdge e in Loader.Edges)
+            {
+                bool on = e == stepEdge || routeEdges.Contains(e);
+                e.SetState(on ? EdgeState.Highlight : EdgeState.Dimmed);
+                e.SetShown(e.IsTree || on || Loader.ShowAllSecondaryEdges);
+            }
+            SetExtraLabels(route.Nodes);
+            FocusChanged?.Invoke(child);
+        }
+
         public void EndTour()
         {
             Suspended = false;
@@ -278,8 +396,7 @@ namespace MusicHistory.Viewer
         public void Reapply()
         {
             if (Hovered != null) ApplyFocus(Hovered, force: true);
-            else if (SelectedEdge != null) ApplyEdgeFocus(SelectedEdge, force: true);
-            else ApplyFocus(Selected, force: true);
+            else ApplyResting(force: true);
         }
 
         void SetExtraLabels(IEnumerable<SongNode> wanted)
@@ -297,7 +414,12 @@ namespace MusicHistory.Viewer
 
         void OnDisable()
         {
-            if (Loader != null && Loader.Nodes.Count > 0 && !Suspended) ApplyFocus(null);
+            // Only when this component alone is switched off. Scene unload, play-mode exit and
+            // Destroy leave 'enabled' true, and by then the songs and their label boxes may
+            // already be destroyed (no fixed order), so nothing is re-applied.
+            if (enabled || !gameObject.activeInHierarchy) return;
+            if (Loader == null || Loader.Nodes.Count == 0 || Suspended) return;
+            ApplyFocus(null, force: true);
         }
     }
 }

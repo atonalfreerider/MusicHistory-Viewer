@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using FDG;
+using MusicHistory.Playback;
 using MusicHistory.Walkthrough;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -25,6 +26,10 @@ namespace MusicHistory.Viewer
     /// DB path: -musicHistoryDb &lt;path&gt; on the command line, else the inspector's DbPath, else
     /// &lt;repo&gt;/data/graph/music_graph.db, else StreamingAssets/music_graph.db (player builds), else
     /// &lt;repo&gt;/data/graph/demo_graph.db. MIDI paths are resolved against the DB's folder.
+    ///
+    /// Featured paths (recording previews, <see cref="PathCatalog"/>): -musicHistoryPaths &lt;paths.json&gt;,
+    /// else the inspector's PathsFile, else &lt;repo&gt;/data/audio/renders/paths.json. A missing file
+    /// gives an empty list; the P panel says so.
     /// </summary>
     [RequireComponent(typeof(ForceDirectedGraph))]
     public sealed class SongGraphLoader : MonoBehaviour
@@ -55,6 +60,10 @@ namespace MusicHistory.Viewer
         [Min(1)] public int TrunkDescendants = 10;
         public bool ShowAllSecondaryEdges;
 
+        [Header("Featured paths")]
+        [Tooltip("Blank: -musicHistoryPaths <paths.json>, else <repo>/data/audio/renders/paths.json.")]
+        public string PathsFile = "";
+
         [Header("Labels")]
         [Range(0, 300)] public int AlwaysLabelledSongs = 40;
         [Min(.001f)] public float LabelScreenSize = .1f;
@@ -77,6 +86,12 @@ namespace MusicHistory.Viewer
         public HoverHighlighter Highlighter { get; private set; } = null!;
         public GraphHud Hud { get; private set; } = null!;
         public WalkthroughDirector Director { get; private set; } = null!;
+        /// <summary>The featured paths, bound to this graph (empty when paths.json is missing).</summary>
+        public PathCatalog Catalog { get; private set; } = PathCatalog.Empty("not loaded");
+        /// <summary>The featured-paths button, list and now-playing strip (P).</summary>
+        public FeaturedPathsPanel? Paths { get; private set; }
+        /// <summary>The glowing line through a previewed featured path.</summary>
+        public RouteLine? RouteLine { get; private set; }
         public TimelineAxis Timeline { get; private set; } = null!;
         public ForceDirectedGraph Simulation { get; private set; } = null!;
         public Camera? ViewCamera => ViewCameraOverride != null ? ViewCameraOverride : Camera.main;
@@ -87,6 +102,7 @@ namespace MusicHistory.Viewer
         readonly List<SongNode> nodes = new();
         readonly List<InfluenceEdge> edges = new();
         readonly List<SongNode> pinned = new();
+        readonly Dictionary<FeaturedPath, GraphRoute> routes = new();
         GameObject? graphRoot;
 
         public SongNode NodeById(int nodeId) => nodes[nodeId - 1];
@@ -135,6 +151,7 @@ namespace MusicHistory.Viewer
             treeRoot.SetParent(graphRoot.transform, false);
             Transform secondaryRoot = new GameObject("Secondary Edges").transform;
             secondaryRoot.SetParent(graphRoot.transform, false);
+            RouteLine = RouteLine.Create(graphRoot.transform);
 
             for (int i = 0; i < data.Songs.Count; i++)
             {
@@ -217,6 +234,8 @@ namespace MusicHistory.Viewer
 
             Director = GetOrAdd<WalkthroughDirector>();
             Director.Initialize(this);
+            string pathsFile = ResolvePathsPath(PathsFile, out string pathsReason);
+            UseCatalog(PathCatalog.Load(pathsFile), pathsReason);
 
             if (cam != null) FrameOverview(cam);
             clock.Stop();
@@ -225,6 +244,64 @@ namespace MusicHistory.Viewer
                       $"{ResolvedDbPath} [{DbPathReason}] in {BuildMilliseconds:0} ms; {frame.Description}; " +
                       $"time fit residual {frame.MaxResidualYears:0.000} years; player: {Director.PlayerDescription}");
             Built?.Invoke(this);
+        }
+
+        /// <summary>
+        /// Binds <paramref name="catalog"/> to this graph (work_id → song), hands it to the walkthrough
+        /// and rebuilds the featured-paths panel.
+        /// </summary>
+        public void UseCatalog(PathCatalog catalog, string reason = "")
+        {
+            routes.Clear();
+            Catalog = catalog ?? PathCatalog.Empty("none");
+            if (Data != null)
+            {
+                Dictionary<string, int> byWork = new(StringComparer.Ordinal);
+                foreach (SongRecord s in Data.Songs)
+                    if (!string.IsNullOrEmpty(s.WorkId) && !byWork.ContainsKey(s.WorkId)) byWork[s.WorkId] = s.NodeId;
+                Catalog.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null);
+            }
+            Director.UseCatalog(Catalog);
+            Paths = GetOrAdd<FeaturedPathsPanel>();
+            Paths.Build(this);
+            string where = Catalog.SourcePath.Length > 0 ? Catalog.SourcePath : "(in memory)";
+            Debug.Log($"MusicHistory: featured paths {Catalog.Status}; {Catalog.PlayableCount} playable; {where}" +
+                      (reason.Length > 0 ? $" [{reason}]" : "") +
+                      (Catalog.Problems.Count > 0 ? $"; {Catalog.Problems.Count} problems, first: {string.Join(" | ", Catalog.Problems.Take(3))}" : ""));
+        }
+
+        /// <summary>The path's songs and the graph edges between consecutive songs (cached per catalog).</summary>
+        public GraphRoute RouteFor(FeaturedPath path)
+        {
+            if (routes.TryGetValue(path, out GraphRoute? cached)) return cached;
+            GraphRoute route = new(path);
+            SongNode? previous = null;
+            Dictionary<EdgeChannel, int> channels = new();
+            foreach (PathStep step in path.Steps)
+            {
+                SongNode? node = step.NodeId >= 1 && step.NodeId <= nodes.Count ? nodes[step.NodeId - 1] : null;
+                InfluenceEdge? edge = null;
+                if (node != null)
+                {
+                    route.Nodes.Add(node);
+                    if (previous != null) edge = GraphRoute.Between(previous, node);
+                    if (edge != null)
+                    {
+                        route.Edges.Add(edge);
+                        channels[edge.Channel] = channels.TryGetValue(edge.Channel, out int n) ? n + 1 : 1;
+                    }
+                }
+                route.StepEdges.Add(edge);
+                previous = node;
+            }
+            // The route's colour: the channel most of its edges carry (edge colours in the graph).
+            EdgeChannel best = EdgeChannel.Loop;
+            int bestCount = 0;
+            foreach (KeyValuePair<EdgeChannel, int> kv in channels)
+                if (kv.Value > bestCount || (kv.Value == bestCount && kv.Key < best)) (best, bestCount) = (kv.Key, kv.Value);
+            route.Color = SongPalette.ChannelColor(best);
+            routes[path] = route;
+            return route;
         }
 
         /// <summary>After a live-simulation step: every edge follows its (moved) endpoints once.</summary>
@@ -323,7 +400,9 @@ namespace MusicHistory.Viewer
                 items.Add((Timeline.AxisPoint(Timeline.FirstYear), 1.5f));
                 items.Add((Timeline.AxisPoint(Timeline.LastYear), 1.5f));
             }
-            (Vector3 position, Quaternion rotation) = CameraFraming.Frame(cam, items, Frame.ViewForward, 1.02f, 5f, OverviewViewport);
+            // Beside the featured-paths list while it is open, else the usual HUD-clear area.
+            Rect viewport = Paths != null && Paths.IsOpen ? Paths.FreeViewport : OverviewViewport;
+            (Vector3 position, Quaternion rotation) = CameraFraming.Frame(cam, items, Frame.ViewForward, 1.02f, 5f, viewport);
             cam.transform.SetPositionAndRotation(position, rotation);
             float extent = Frame.Bounds.size.magnitude;
             cam.farClipPlane = Mathf.Max(cam.farClipPlane, Vector3.Distance(position, Frame.Bounds.center) + extent * 2f);
@@ -335,9 +414,39 @@ namespace MusicHistory.Viewer
             }
         }
 
+        /// <summary>
+        /// Frames the songs dated <paramref name="firstYear"/>..<paramref name="lastYear"/> and that
+        /// stretch of the timeline into <paramref name="viewport"/> (the featured-paths list uses it).
+        /// </summary>
+        public void FrameYears(Camera cam, double firstYear, double lastYear, Rect viewport)
+        {
+            if (Data == null || nodes.Count == 0) return;
+            double lo = Math.Max(firstYear, Math.Floor(Data.MinTime)), hi = Math.Min(lastYear, Math.Ceiling(Data.MaxTime) + 1);
+            List<(Vector3, float)> items = new();
+            foreach (SongNode n in nodes)
+                if (n.Song.TimeValue >= lo && n.Song.TimeValue <= hi) items.Add((n.transform.position, n.Radius));
+            if (items.Count < 2)
+            {
+                FrameOverview(cam);
+                return;
+            }
+            if (Timeline != null)
+            {
+                items.Add((Timeline.AxisPoint(lo), 1.5f));
+                items.Add((Timeline.AxisPoint(hi), 1.5f));
+            }
+            (Vector3 position, Quaternion rotation) = CameraFraming.Frame(cam, items, Frame.ViewForward, 1.04f, 5f, viewport);
+            cam.transform.SetPositionAndRotation(position, rotation);
+            float extent = Frame.Bounds.size.magnitude;
+            cam.farClipPlane = Mathf.Max(cam.farClipPlane, Vector3.Distance(position, Frame.Bounds.center) + extent * 2f);
+            CameraControl control = cam.GetComponent<CameraControl>();
+            if (control != null) control.SyncRotationFromTransform();
+        }
+
         /// <summary>Labels, timeline widths and HUD for <paramref name="cam"/> now (edit-mode rendering).</summary>
         public void RefreshView(Camera cam)
         {
+            if (RouteLine != null) RouteLine.Refresh(cam);
             Labels.Refresh(cam);
             Timeline.Refresh(cam);
             Labels.ForceMeshUpdate();
@@ -353,7 +462,8 @@ namespace MusicHistory.Viewer
             if (k.vKey.wasPressedThisFrame)
             {
                 ShowAllSecondaryEdges = !ShowAllSecondaryEdges;
-                if (Highlighter.Suspended) Highlighter.ApplyFocus(Highlighter.Focus, force: true);
+                if (Director.IsTouring) Director.RefreshStepHighlight();
+                else if (Highlighter.Suspended) Highlighter.ApplyFocus(Highlighter.Focus, force: true);
                 else Highlighter.Reapply();
             }
             if (k.hKey.wasPressedThisFrame) Hud.ToggleHelp();
@@ -387,6 +497,7 @@ namespace MusicHistory.Viewer
         public void Clear()
         {
             if (Director != null) Director.Exit();
+            routes.Clear();
             if (Simulation != null) Simulation.Clear();
             if (Labels != null) Labels.Clear();
             if (graphRoot != null) Discard(graphRoot);
@@ -427,6 +538,25 @@ namespace MusicHistory.Viewer
             if (File.Exists(fromCwd)) return fromCwd;
             string fromRepo = Path.GetFullPath(Path.Combine(RepoRoot(), path));
             return File.Exists(fromRepo) ? fromRepo : fromCwd;
+        }
+
+        /// <summary>paths.json: -musicHistoryPaths, else <paramref name="configured"/>, else &lt;repo&gt;/data/audio/renders/paths.json.</summary>
+        public static string ResolvePathsPath(string configured, out string reason)
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+            {
+                if (!string.Equals(args[i], PathCatalog.CommandLineFlag, StringComparison.OrdinalIgnoreCase)) continue;
+                reason = "command line";
+                return ResolveUserPath(args[i + 1]);
+            }
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                reason = "inspector";
+                return ResolveUserPath(configured);
+            }
+            reason = "default";
+            return Path.Combine(RepoRoot(), "data", "audio", "renders", PathCatalog.FileName);
         }
 
         public static string ResolveDatabasePath(string configured, out string reason)

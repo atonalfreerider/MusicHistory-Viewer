@@ -132,18 +132,24 @@ namespace MusicHistory.Viewer
             return sharedMaterial;
         }
 
+        /// <summary>
+        /// False once the label's text box is destroyed. Scene unload and play-mode exit destroy
+        /// objects in no fixed order, so a label can outlive its box; every operation skips it then.
+        /// </summary>
+        public static bool IsAlive(WorldLabel? label) => label != null && label.Box != null;
+
         public void SetVisible(WorldLabel label, bool visible)
         {
             if (label.Visible == visible) return;
             label.Visible = visible;
-            label.Box.gameObject.SetActive(visible);
+            if (label.Box != null) label.Box.gameObject.SetActive(visible);
         }
 
         public void SetDimmed(WorldLabel label, bool dimmed)
         {
             if (label.Dimmed == dimmed) return;
             label.Dimmed = dimmed;
-            label.Box.Color = dimmed ? DimColor : NormalColor;
+            if (label.Box != null) label.Box.Color = dimmed ? DimColor : NormalColor;
         }
 
         void LateUpdate() => Refresh(Camera.main);
@@ -164,7 +170,7 @@ namespace MusicHistory.Viewer
             candidates.Clear();
             foreach (WorldLabel label in labels)
             {
-                if (!label.Visible) continue;
+                if (!label.Visible || label.Box == null) continue;
                 Vector3 anchor = label.AnchorPosition;
                 float depth = Vector3.Dot(anchor - origin, forward);
                 float distance = cam.orthographic ? cam.orthographicSize * 2f : Mathf.Max(.5f, depth);
@@ -252,7 +258,7 @@ namespace MusicHistory.Viewer
         public void ForceMeshUpdate()
         {
             foreach (WorldLabel label in labels)
-                if (label.Visible) label.Box.TextField.ForceMeshUpdate();
+                if (label.Visible && label.Box != null) label.Box.TextField.ForceMeshUpdate();
         }
 
         public void Clear()
