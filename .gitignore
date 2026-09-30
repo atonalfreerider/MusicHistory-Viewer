@@ -52,3 +52,19 @@ crashlytics-build.properties
 # A graph DB copied next to a player build (the pipeline writes data/graph/ instead)
 Assets/StreamingAssets/*.db
 Assets/StreamingAssets/*.db.meta
+
+# Formerly covered by the MusicHistory repo's root .gitignore (this project used to live in
+# MusicHistory/unity): .NET build output of the plain test projects, and data that must never
+# be committed (MIDI transcriptions, databases, SoundFonts, audio).
+bin/
+obj/
+*.mid
+*.midi
+*.kar
+*.db
+*.db-journal
+*.sqlite
+*.sf2
+*.sf3
+*.mp3
+*.wav
