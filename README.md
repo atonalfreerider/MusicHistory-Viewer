@@ -332,8 +332,8 @@ among ten lyrical themes. Open the scene and press Play. It is in the build sett
 
 The viewer (`Assets/MusicHistory/Themes/ThemesViewer.cs`) looks for a themes database in this order:
 `-themesDb <path>` on the command line, then `DbPath` on the **Lyric Themes** object, then
-`<repo>/data/graph/themes_graph.db`, then `StreamingAssets/themes_graph.db`, then
-`<repo>/data/graph/themes_demo.db`. If the layout stage has not written positions yet
+`<MusicHistory>/data/graph/themes_graph.db`, then `StreamingAssets/themes_graph.db`, then
+`<MusicHistory>/data/graph/themes_demo.db`. If the layout stage has not written positions yet
 (`position_x` is NULL), the viewer places the songs itself and says so in the legend. It puts each
 song at the barycentre of the anchors weighted by score², then pushes overlapping songs apart.
 The result is deterministic.
