@@ -38,7 +38,7 @@ next to `data/graph/` finds `data/songs/`.
 
 | Input | Action |
 |---|---|
-| Hover | Highlights the song, the songs that influenced it and the songs it influenced. Shows its secondary edges and fills the info panel (title, artist, year, key, BPM, main loop, lineage, and the tree edge: bits and z for a strict-evidence graph, `Shares: <identity>` for identity lineages). |
+| Hover | Highlights the song, the songs that influenced it and the songs it influenced. Shows its secondary edges and its card at the top right: title, artist · year, key · BPM and its main loop as a chord ring (see "The song card"). The lineage and the shared identity are on the edge card (click an edge). |
 | Left click | Selects a song: a sticky focus that becomes the walkthrough's target. A click on no bubble but within 7 px (`EdgePickPixels`) of a drawn edge selects the edge: its card replaces the song info, and a family tour plays its identity. Clicking empty space clears both. |
 | Right drag · W A S D · Q E · wheel | Look · move · down/up · dolly. Hold Shift to move faster. |
 | R / Home | Reset to the overview. |
@@ -51,8 +51,9 @@ next to `data/graph/` finds `data/songs/`.
 | Space · N / → · B / ← · Esc | Pause/resume · next step · previous step · leave the tour (the free camera comes back). |
 | C | Toggle "compare in C / 120 BPM": plays the normalized MIDI without the key/BPM glide. |
 | P · the "Featured paths" button (top centre) | Open the featured paths: curated walks through the graph played from recording previews (see below). |
-| M · the "Melody" button (while a path plays its mashup mix) | Show or hide the melody graph above the now-playing strip (see "Mashup mixes and the melody graph"). |
-| N (while a narrated path plays) | Narration on or off: the voice, the duck, the caption and the photo card (see "Narrated walkthroughs"). On a path without narration N still steps on; → always does. |
+| M · the "Melody" button (while a path plays its mashup mix or its duet loop) | Show or hide the melody graph above the now-playing strip (see "Mashup mixes and the melody graph"). |
+| N (while a narrated path plays) | Captions on or off: the narration's line and its photo card (see "Narrated walkthroughs"; there is no voiceover). On a path without narration N still steps on; → always does. |
+| K · the "Duet" buttons | In the featured-paths list: play the selected path's duet loop. While a path plays: switch between its duet loop and its narrated mix (see "Duet loops"). |
 
 Each walkthrough step does four things:
 
@@ -135,7 +136,8 @@ and the beat alignment, as far as they fit. The instrumental's chip is lit (`BAC
 changeover), the vocal's chip is marked `VOCAL` in its melody colour, and the time bar covers the
 whole mix with the changeovers (white) and morphs (accent) marked above it.
 
-**The melody graph** (`Viewer/MelodyGraphPanel.cs`) sits directly above the strip, the same width:
+**The melody graph** (`Viewer/MelodyGraphPanel.cs`) sits directly above the strip, the same width
+(landscape; for the vertical layout see below):
 
 - x is the position in the shared phrase (`phrase_beats`), with bar lines; y the sung pitch in the
   normalized C major / A minor frame, with note-name ticks (C bright).
@@ -148,6 +150,16 @@ whole mix with the changeovers (white) and morphs (accent) marked above it.
   (circle-of-fifths hue, minor darker) with roman numerals, the current chord underlined; during a
   changeover a thin strip above it shows the vocal's own chords, so the match is visible.
 - A playhead with a `bar n · <chord>` tag runs through the graph and the strips.
+
+**Vertical (portrait) layout.** The melody graph is three times larger: three times the pixels per
+beat and per semitone (the plot is 498 px tall instead of 166; the panel 604 instead of 272, the
+title row and the chord strip keep their size). It no longer fits the width, so it pans: the white
+playhead stays at the panel's centre, which is the screen's centre, and the melodies, the chord
+strips, the bar lines and the light points move right to left under it. The phrase-folded x of a
+narrated mix wraps around the phrase as it pans (a vocal crossing the phrase end runs on as one
+line). The panning content is drawn into a masked strip a few beats wider than the plot and only
+shifted per frame; it is redrawn when the playhead has moved `RedrawPixels` (360 px) from where it
+was drawn. Landscape keeps the static phrase graph.
 
 The light points bloom through URP. uGUI is drawn after URP's post-processing, so they are not
 drawn on the panel itself: `Viewer/MelodyLightRig.cs` keeps one HDR quad per song
@@ -166,38 +178,40 @@ written by the pipeline's `narration` stage; `-musicHistoryNarration <file>` or 
 or `ArtistsFile`). Paths in both are under `MusicHistory.PipelinePaths.Data()`. A missing file
 leaves the paths unnarrated (the console says which).
 
-- **Voice and duck** (`Playback/NarrationPlayer.cs`). Each cue's WAV plays at its `at` time on the
-  mix clock (`MashupPlayer.CurrentSeconds`), on an AudioSource of its own child object. The mix is
-  the master: Pause pauses the voice, a seek inside the speaking line re-syncs it, drift over 0.15 s
-  is corrected, and a jump (Next, Back, a chip, Enter) stops a line the new time is not in. The line
-  the mix lands in starts when it lands within 1 s of its start; otherwise its caption shows and the
-  voice waits for the next cue. Stop silences it at once. While a line is heard, the mix is ducked to
-  the cue's `duck_db` through `MashupPlayer.DuckGain` with a smooth envelope (attack 0.15 s, release
-  0.6 s); without narration, between lines (after the release) and with narration off it is never
-  ducked. The WAVs of a path are decoded when it starts.
+- **Captions only, no voiceover** (`Playback/NarrationPlayer.cs`). Each cue's line shows as a
+  caption from its `at` time on the mix clock (`MashupPlayer.CurrentSeconds`), held long enough to
+  read: at least the cue's spoken length (`seconds`), extended to a reading time (15 characters per
+  second, at least 2 s) plus 0.6 s, but never into the next cue. The cue WAVs stay on disk for future
+  use and are never loaded or played (no AudioClip, no AudioSource), and the mix is never ducked
+  (`MashupPlayer.DuckGain` stays 1; the `DuckEnvelope` is kept for when a voice comes back). The mix
+  is the master: a pause, a seek (Next, Back, a chip, Enter) or Stop changes the caption at once;
+  N shows or hides the captions.
 - **Caption and photo card** (`Viewer/NarrationOverlay.cs`). The line shows as a subtitle (our own
   narration, never lyrics), and the cue's image as a card with the photo, whom it shows and, always,
   `Photo: <author>, <license> (Wikimedia Commons)` under it. Both fade and slide in and out. A photo
-  without a licence, or whose file is missing, is never shown. The strip's kicker says `NARRATED  N`.
+  without a licence, or whose file is missing, is never shown. The strip's kicker says `CAPTIONS  N`
+  (`CAPTIONS OFF  N` after N).
 - **Layout** (`Viewer/ViewerLayout.cs`) follows `Screen.width` / `Screen.height` at runtime (a resized
   Game view, the Recorder's output size). Horizontal keeps the layout above: the caption above the
   melody graph (above the strip when the graph is hidden), the card in the column right of the strip
   (beside the caption on 4:3), and the songs framed above the caption. Vertical (height more than 1.2
   × width, e.g. 1080x1920) scales the canvases to a 1280-wide reference and stacks, from the top: the
-  graph view, the melody graph, the narration band (photo card left, caption right) and the
-  now-playing strip; the Paths button moves to the top right and the legend and song info start
-  under it.
+  graph view, the melody graph (three times larger, panning), the narration band (330 px: photo card
+  left, caption right; only while a narrated mix plays, otherwise the graph sits right on the strip)
+  and the now-playing strip; the Paths button moves to the top right and the legend and song info
+  start under it. The 3D view gets about 28% of a 9:16 frame above the larger graph (it had a third).
 
 ### Recording a narrated path
 
 **MusicHistory → Record narrated path → Horizontal 1920x1080** or **Vertical 1080x1920** records the
 path playing or selected in the featured-paths panel (in play mode), else the path recorded last,
 else the first narrated path with a mashup. It opens `Assets/Scenes/SongInfluenceGraph.unity` if
-needed, enters play mode, starts the tour paused while the mix and the narration load, starts the
+needed, enters play mode, starts the tour paused while the mix loads, starts the
 Unity Recorder (`com.unity.recorder` 5.1.7: Game view at the output size, constant 30 fps, H.264 MP4
 with the AudioListener's sound), lets the layout adapt (legend and Paths button hidden), plays the
 tour from the top and stops 1.5 s after it ends. **Stop recording** in the same menu stops early.
-The file is `<MusicHistory>/data/recordings/<path id>_<horizontal|vertical>.mp4`.
+The file is `<MusicHistory>/data/recordings/<path id>_<horizontal|vertical>.mp4`. The narration is in
+it as captions only (no voiceover).
 
 From the command line (not `-batchmode`: the Recorder needs the Game view; the project must not be
 open in another editor), the editor quits when the file is written (exit code 0):
@@ -205,6 +219,73 @@ open in another editor), the editor quits when the file is written (exit code 0)
 ```bash
 "$UNITY" -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathRecorder.Record -path <path id> -format vertical -logFile "$PWD/record.log"
 ```
+
+## Duet loops (DESIGN §16)
+
+A featured path with a duet loop in `data/audio/duets/duets.json` (version 1, written by the
+pipeline's `duets` stage next to one `<path id>/loop.mp3` per path; `-musicHistoryDuets <file>` or
+the loader's `DuetsFile` picks another; a missing file offers no duets) can play it instead of its
+narrated mix: two vocals at all times, all in the root song's key and tempo over the root's
+instrumental bed, pair k = S_k + S_(k+1), handing off around the path and looping back to the
+start, with no narration.
+
+- **Choosing it.** In the featured-paths list a path with a loop says `duet loop` on its row and has
+  a **DUET** button there; the footer has **Duet loop  K** next to **Play path**; K plays the selected
+  path's loop. While a path plays, K (or the strip's **Duet / Mix** button) switches between its
+  duet loop and its narrated mix, from the top.
+- **Playback** (`Playback/DuetPlayer.cs`). The MP3 is decoded once to PCM, cut to the contract's exact
+  length when the decoder left MP3 padding on it, and played by a looping AudioSource of its own child
+  object: the wrap from the last sample to the first happens on the audio thread, sample-accurately,
+  and the file is rendered circularly, so it is seamless. The clock follows the source's sample
+  position, unwrapped across the wrap (`TotalSeconds`, `Cycle`) and smoothed for display; seeks,
+  Pause and Stop fade. Next / → and Back / ← jump to the next / previous pair's start, round the
+  loop; a chip jumps to the pair it leads; the tour never completes.
+- **On the graph.** Both singers glow and the edge between them lights up (and grows the first time);
+  during a handoff the borrowed instrumental's song is marked (it glows faintly); the camera frames
+  the pair. The strip reads `Duet: A + B over <root>` (and, in a handoff, which vocal enters over
+  whose instrumental), the key, the BPM, the chord match and `LOOP n  m:ss / m:ss`; the singers'
+  chips say VOCAL, the root's BED, a handoff's borrowed song INSTRUMENTAL; the time bar marks the
+  handoffs.
+- **The melody graph** is a timeline of mix beats in both layouts, panning right to left under the
+  centre playhead and wrapping seamlessly at the loop point (one phrase per plot width in landscape,
+  three times larger in portrait); the two singing melodies are bright and thicker with their bloom
+  lights, the others muted; the chord strip is the bed's chords.
+
+### Recording a duet loop
+
+**MusicHistory → Record duet loop → Horizontal 1920x1080** or **Vertical 1080x1920**, or
+`-variant duet` on the command line (default `narrated`), records one full cycle from the loop's
+start plus the first 4 bars after the wrap (so the seamless loop point is in the video) to
+`<MusicHistory>/data/recordings/<path id>_duet_<horizontal|vertical>.mp4`:
+
+```bash
+"$UNITY" -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathRecorder.Record -path <path id> -format vertical -variant duet -logFile "$PWD/record.log"
+```
+
+## Photos on the bubbles
+
+Every song whose artist has a catalogued photo (`data/images/artists.json`, DESIGN §15) shows it as a
+round, camera-facing picture on its bubble (`Viewer/BubblePhotos.cs`, `Resources/BubblePhoto.shader`):
+a child quad just in front of the sphere, 72% of the bubble's diameter so the key colour and the
+decade ring stay around it, cropped to a square (a portrait keeps its upper part), scaling with the
+bubble and following its state (a dimmed bubble's photo dims and greys). Songs map to photos by the
+catalogue's `work_ids`, else by the artist's name (or its lead artist before "feat." / "&"); only
+photos with a file and a licence are used. Photos are decoded lazily (one per frame, the first time
+one of their bubbles is in view) and shared with the narration's popup card, with mipmaps; the
+quads have no collider, so hover and click pick the bubble as before; smaller than 12 px on screen
+they are not drawn. The credit stays on the popup card.
+
+## The song card
+
+The info panel at the top right is a compact card: the title, `artist · year`, `key · BPM`, and the
+song's main loop (`song_node.main_loop`, its first reading: roman numerals relative to the major, so
+in the normalized C major frame) as a ring (`Viewer/ChordRing.cs`): one arc per chord, clockwise
+from 12 o'clock (marked), in the same chord colours as the melody graph's chord strip
+(`ChordPalette`: the key palette at the chord's root, minor and diminished darker), its roman
+numeral beside it. While a mashup mix plays, the ring shows the progression heard (the
+instrumental's chords over the phrase, sized by their length) with a hand at the music's place and
+the chord under it in the middle; during a duet loop, the bed's chords over the current phrase. The
+lineage and the shared identity moved to the edge card (click an edge).
 
 ## Identity lineages (DESIGN §8b)
 
@@ -325,7 +406,12 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Assets/MusicHistory/Editor/PathsValidation.cs`, `MashupValidation.cs`, `PathsPlayMode.cs` | Featured paths and mashup mixes: edit-mode checks and screenshots, play-mode checks. |
 | `Playback/NarrationCatalog.cs`, `NarrationPlayer.cs` | `narration.json` v1 reader (cues, lookups on the mix clock, contract problems); the narration player (cue scheduling on the mix clock, voice AudioSource, duck envelope). |
 | `Viewer/ArtistImages.cs`, `NarrationOverlay.cs`, `ViewerLayout.cs` | `artists.json` reader and on-demand JPG textures, the credit line; the caption and photo card; the horizontal / vertical layout. |
-| `Assets/MusicHistory/Editor/NarrationValidation.cs`, `PathRecorder.cs` | Narration checks (no scene needed); recording a narrated path with the Unity Recorder. |
+| `Assets/MusicHistory/Editor/NarrationValidation.cs`, `PathRecorder.cs` | Narration (captions) checks (no scene needed); recording a narrated path or a duet loop with the Unity Recorder. |
+| `Playback/DuetCatalog.cs`, `DuetPlayer.cs` | `duets.json` v1 reader (no Unity API): segments, pairs, beats, the bed's chords, songs, the loop clock, contract checks, binding; the seamless loop player. |
+| `Viewer/MelodyScroll.cs` | The panning melody graph's maths (no Unity API): wrapping, pieces in unwrapped beats, the line's pitch, images. |
+| `Viewer/BubblePhotos.cs`, `Assets/Resources/BubblePhoto.shader` | Artist photos on the bubbles. |
+| `Viewer/ChordRing.cs` | The shared chord palette, main-loop parsing and the chord ring of the song card. |
+| `Assets/MusicHistory/Editor/DuetValidation.cs` | Duet loops, the vertical melody graph and the bubble photos in edit mode. |
 | `Assets/MusicHistory/Contracts/` | Shared with the audio module (foundation, do not edit). |
 
 ## Performance (measured)
@@ -455,9 +541,10 @@ Narration Validation**, or):
 
 ```bash
 # narration.json and artists.json parsing (fixtures; the real files too once the pipeline wrote
-# them: WAVs, photos with author and licence, cues inside their mix), cue scheduling on the mix
-# clock (start at 'at', pause, seeks into, before and inside a line, N off/on, Stop, a mashup
-# without narration never ducked), the duck envelope (0.15 s attack, 0.6 s release), the credit
+# them: WAVs kept on disk, photos with author and licence, cues inside their mix), the captions on
+# the mix clock (from 'at', held for their reading time, pause, seeks into, before and inside a
+# line, N off/on, Stop) with no voiceover (no narration AudioSource, the music at full gain through
+# every cue), the (unused, kept) duck envelope (0.15 s attack, 0.6 s release), the credit
 # line and on-demand JPG decoding, and the horizontal / vertical layout rects (no overlaps at
 # 1920x1080, 1080x1920 and six other sizes). Writes narration_validation.json.
 "$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.NarrationValidation.Run -logFile "$PWD/narration.log"
@@ -467,6 +554,30 @@ Narration Validation**, or):
 catalog): the mix decoded (44.1 kHz, length = mashups.json) and playing in real time, the melody
 graph on its camera canvas, Space, Next, M, the whole mix on the main-thread clock at time scale 8
 (every segment in order, finished once), and the same path per step without mashups.
+
+Duet loops, the vertical melody graph and the bubble photos are checked on their own (**MusicHistory
+→ Run Duet Validation**, or):
+
+```bash
+# Pure: the duets.json contract on an inline loop (segments, pairs, beats, chords, melodies, audible
+# spans), the loop clock (segments, pairs, the mix beat continuous through the loop point), two vocals
+# audible everywhere, contract violations, binding, the panning maths. Scene, for a synthetic catalog
+# built from the paths, the real duets.json (when written) and -validationDuets <file>: the list offers
+# the duet, K plays it (no narration), a whole cycle and past the wrap on the clock (pairs, singers
+# lit, the edge between them, the borrowed instrumental marked, the camera on the pair, the graph
+# panning under a centre playhead ±0.5 px with every light on it and on its line, no jump at the
+# wrap), the strip text, Next/Back round the loop, Space, M, K, C, Esc; portrait 1080x1920 (the graph
+# three times larger, panning, centred, clear of the HUD); a narrated mix in portrait (wrapping round
+# its phrase) and back in landscape (the static graph); photos on bubbles (synthetic and real
+# artists.json: mapping, lazy loading, shared textures, dimming, picking, drawn in front of the
+# bubble). Writes duet_landscape.png, duet_portrait.png, melody_portrait.png, bubble_photos.png and
+# duet_validation.json.
+"$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.DuetValidation.Run -logFile "$PWD/duets.log"
+# One duet loop in real time on the audio device round its loop point (decoded length = duets.json
+# after trimming, two wraps, the clock continuous through them, real-time rate). -duetPlayId <path id>,
+# -validationDuets <file>. Writes data/screens/duet_fullplay.json.
+"$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullDuet -logFile "$PWD/duet_full.log"
+```
 
 ## Lyric themes
 

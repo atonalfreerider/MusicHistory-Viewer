@@ -43,7 +43,7 @@ namespace MusicHistory.Viewer
         readonly Mesh quad;
         readonly MaterialPropertyBlock block = new();
         readonly List<(MeshRenderer core, MeshRenderer flare)> lights = new();
-        readonly float panelWidth, panelHeight;
+        float panelWidth, panelHeight;
         RenderTexture? texture;
 
         public Camera Camera => camera;
@@ -128,6 +128,20 @@ namespace MusicHistory.Viewer
             image.color = Color.white;
             root.SetActive(false);
             image.gameObject.SetActive(false);
+        }
+
+        /// <summary>
+        /// The panel changed size (the vertical layout's taller graph): the camera frames the new
+        /// panel and the composite covers it; the texture follows at the next <see cref="Sync"/>.
+        /// </summary>
+        public void Resize(float width, float height)
+        {
+            if (Mathf.Approximately(width, panelWidth) && Mathf.Approximately(height, panelHeight)) return;
+            panelWidth = width;
+            panelHeight = height;
+            camera.transform.localPosition = new Vector3(width * .5f, -height * .5f, -10f);
+            camera.orthographicSize = height * .5f;
+            UiKit.Place((RectTransform)image.transform, 0, 0, width, height);
         }
 
         /// <summary>One light per song (created on demand).</summary>

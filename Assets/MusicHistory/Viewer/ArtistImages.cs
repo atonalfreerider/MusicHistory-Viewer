@@ -27,6 +27,12 @@ namespace MusicHistory.Viewer
         public string Author = "";
         public string License = "";
         public string LicenseUrl = "";
+        /// <summary>The artist's Wikidata id ("Q1545"; from artist_qid, else the image id "artist-&lt;QID&gt;").</summary>
+        public string ArtistQid = "";
+        /// <summary>The artist's name when the catalog gives one (artist / artist_name), else empty.</summary>
+        public string ArtistName = "";
+        /// <summary>The songs (work ids) this photo's artist sings on (work_ids).</summary>
+        public readonly List<string> WorkIds = new();
 
         /// <summary>"Photo: &lt;author&gt;, &lt;license&gt; (Wikimedia Commons)".</summary>
         public string Credit => ArtistImages.CreditLine(Author, License);
@@ -170,8 +176,14 @@ namespace MusicHistory.Viewer
                 Author = Clean(First(o, "author", "artist_credit", "creator", "photographer", "credit", "attribution")),
                 License = Clean(First(o, "license", "licence", "license_short", "licence_short", "license_name", "licence_name", "license_short_name")),
                 LicenseUrl = First(o, "license_url", "licence_url"),
-                File = First(o, "file", "path", "local_file", "image_file", "filename")
+                File = First(o, "file", "path", "local_file", "image_file", "filename"),
+                ArtistQid = First(o, "artist_qid", "qid", "wikidata"),
+                ArtistName = Clean(First(o, "artist_name", "artist", "performer"))
             };
+            foreach (string k in new[] { "work_ids", "works", "songs" })
+                if (o.TryGetValue(k, out object? wv) && wv is List<object?> works)
+                    foreach (object? w in works)
+                        if (w is string ws && ws.Trim().Length > 0 && !image.WorkIds.Contains(ws.Trim())) image.WorkIds.Add(ws.Trim());
             // {"license": {"name": ..., "url": ...}}
             foreach (string k in new[] { "license", "licence" })
                 if (o.TryGetValue(k, out object? lv) && lv is Dictionary<string, object?> lo)
@@ -188,6 +200,7 @@ namespace MusicHistory.Viewer
             if (image.License.Length == 0) Problems.Add($"{ctx}: no licence (never shown)");
             if (image.Author.Length == 0) Problems.Add($"{ctx}: no author");
             if (image.File.Length == 0) image.File = "artists/" + image.Id + ".jpg";
+            if (image.ArtistQid.Length == 0 && image.Id.StartsWith("artist-Q", StringComparison.Ordinal)) image.ArtistQid = image.Id.Substring("artist-".Length);
             try
             {
                 string rel = image.File.Replace('/', System.IO.Path.DirectorySeparatorChar);
@@ -238,7 +251,11 @@ namespace MusicHistory.Viewer
 
         // ------------------------------------------------------------------ textures (on demand)
 
-        /// <summary>The photo's texture, decoded on first use (null when the file is missing or unreadable).</summary>
+        /// <summary>
+        /// The photo's texture, decoded on first use (null when the file is missing or unreadable);
+        /// with mipmaps, so a photo on a small bubble far away does not shimmer. Shared by the popup
+        /// card and the bubble pictures.
+        /// </summary>
         public Texture2D? Texture(string? id)
         {
             ArtistImage? image = Find(id);
@@ -248,13 +265,13 @@ namespace MusicHistory.Viewer
             try
             {
                 byte[] bytes = System.IO.File.ReadAllBytes(image.AbsoluteFile);
-                tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
+                tex = new Texture2D(2, 2, TextureFormat.RGBA32, true)
                 {
                     name = "Artist " + image.Id,
                     hideFlags = HideFlags.DontSave,
                     wrapMode = TextureWrapMode.Clamp,
-                    filterMode = FilterMode.Bilinear,
-                    anisoLevel = 1
+                    filterMode = FilterMode.Trilinear,
+                    anisoLevel = 2
                 };
                 if (!tex.LoadImage(bytes, true))
                 {
@@ -272,6 +289,12 @@ namespace MusicHistory.Viewer
             textures[image.Id] = tex;
             return tex;
         }
+
+        /// <summary>The photo's texture when it was decoded already (never decodes).</summary>
+        public Texture2D? LoadedTexture(string? id) => id != null && textures.TryGetValue(id, out Texture2D? t) ? t : null;
+
+        /// <summary>The photo was decoded (or failed to decode) already.</summary>
+        public bool Decoded(string? id) => id != null && textures.ContainsKey(id);
 
         /// <summary>Photos decoded so far.</summary>
         public int TexturesLoaded

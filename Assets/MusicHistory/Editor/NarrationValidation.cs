@@ -17,12 +17,12 @@ namespace MusicHistory.EditorTools
     /// <summary>
     /// Narrated walkthroughs (DESIGN.md §15) in edit mode, without opening a scene: narration.json
     /// and artists.json parsing (synthetic fixtures, plus the real files when the pipeline has
-    /// written them), cue scheduling against the mashup mix clock (play, pause, seek, Next / Back
-    /// jumps, Stop, narration off) with a <see cref="MashupPlayer"/> and a
-    /// <see cref="NarrationPlayer"/> on the main-thread clock, the duck envelope (attack 0.15 s,
-    /// release 0.6 s, never ducked without narration), the photo credit line and on-demand JPG
-    /// decoding, and the horizontal / vertical layout rects (no overlaps at 1920x1080 and
-    /// 1080x1920 and other sizes).
+    /// written them), the captions against the mashup mix clock (play, pause, seek, Next / Back
+    /// jumps, Stop, captions off; each held for its reading time) with a <see cref="MashupPlayer"/>
+    /// and a <see cref="NarrationPlayer"/> on the main-thread clock — and no voiceover: no narration
+    /// audio, the music never ducked — the (unused, kept) duck envelope, the photo credit line and
+    /// on-demand JPG decoding, and the horizontal / vertical layout rects (no overlaps at 1920x1080
+    /// and 1080x1920 and other sizes).
     ///
     /// MusicHistory › Run Narration Validation, or
     /// <c>-executeMethod MusicHistory.EditorTools.NarrationValidation.Run</c> (exit code 0 when every
@@ -229,7 +229,7 @@ namespace MusicHistory.EditorTools
             }
         }
 
-        // ------------------------------------------------------------------ the duck envelope
+        // ------------------------------------------------------------------ the duck envelope (kept for a voice to come back; unused)
 
         static void EnvelopeChecks(Report r)
         {
@@ -272,141 +272,115 @@ namespace MusicHistory.EditorTools
             r.Check("duck: a fresh duck takes the cue's own depth", Mathf.Abs(fresh.DepthDb + 20f) < 1e-4f && fresh.GainDb < 0f);
         }
 
-        // ------------------------------------------------------------------ scheduling on the mix clock
+        // ------------------------------------------------------------------ captions on the mix clock (no voiceover)
 
         static void SchedulingChecks(Report r)
         {
             NarrationCatalog catalog = FixtureCatalog();
             NarrationPath path = catalog.For(PathId)!;
+            // Reading windows: at least the spoken length, extended to the reading time, never into the next cue.
+            NarrationCatalog reading = NarrationCatalog.Parse(@"{""version"":1,""paths"":[{""id"":""r"",""cues"":[
+                {""id"":""a"",""at"":0,""seconds"":1,""file"":""r/a.wav"",""text"":""" + new string('a', 60) + @""",""duck_db"":-12},
+                {""id"":""b"",""at"":5,""seconds"":1,""file"":""r/b.wav"",""text"":""" + new string('b', 90) + @""",""duck_db"":-12},
+                {""id"":""c"",""at"":8,""seconds"":6,""file"":""r/c.wav"",""text"":""Short."",""duck_db"":-12}]}]}", "", "reading");
+            NarrationPath rp = reading.For("r")!;
+            r.Check("captions: held for the reading time (60 chars at 15/s = 4 s) plus the hold, at least the spoken length, never into the next cue",
+                Math.Abs(rp.CaptionEnd(0, 15, 2, .6) - 4.6) < 1e-9 && Math.Abs(rp.CaptionEnd(1, 15, 2, .6) - 8) < 1e-9 && Math.Abs(rp.CaptionEnd(2, 15, 2, .6) - 14.6) < 1e-9 &&
+                rp.ReadingCaptionAt(4.5, 15, 2, .6) == rp.Cues[0] && rp.ReadingCaptionAt(4.7, 15, 2, .6) == null && rp.ReadingCaptionAt(7.99, 15, 2, .6) == rp.Cues[1],
+                $"{rp.CaptionEnd(0, 15, 2, .6):0.00} / {rp.CaptionEnd(1, 15, 2, .6):0.00} / {rp.CaptionEnd(2, 15, 2, .6):0.00}");
+
             GameObject host = new("Narration Validation") { hideFlags = HideFlags.HideAndDontSave };
             try
             {
                 MashupPlayer mix = host.AddComponent<MashupPlayer>();
                 mix.ClockOnly = true;
                 NarrationPlayer narration = host.AddComponent<NarrationPlayer>();
-                narration.ClockOnly = true;
                 Mashup m = SyntheticMashup(PathId, 60);
                 Mashup? current = m;
                 narration.Bind(mix, () => current, catalog);
                 SongClip tag = new() { NodeId = 1, Title = "fixture" };
                 mix.PlayMix(m, 0, tag);
                 const double dt = .02;
+                float lowest = 1f;
+                void Step()
+                {
+                    mix.Advance(dt);
+                    narration.Advance(dt);
+                    lowest = Mathf.Min(lowest, mix.DuckGain);
+                }
                 void Run(double seconds)
                 {
-                    for (double s = 0; s < seconds - 1e-9; s += dt)
-                    {
-                        mix.Advance(dt);
-                        narration.Advance(dt);
-                    }
+                    for (double s = 0; s < seconds - 1e-9; s += dt) Step();
                 }
                 void RunTo(double t)
                 {
-                    for (int k = 0; k < 100000 && mix.CurrentSeconds < t - 1e-9; k++)
-                    {
-                        mix.Advance(dt);
-                        narration.Advance(dt);
-                    }
+                    for (int k = 0; k < 100000 && mix.CurrentSeconds < t - 1e-9; k++) Step();
                 }
+                double End(int i) => narration.CaptionEnd(path, i);
 
                 RunTo(.8);
-                r.Check("schedule: before the first cue nothing speaks and the mix is not ducked",
-                    narration.CurrentPath == path && !narration.Speaking && narration.CaptionCue == null && mix.DuckGain == 1f,
-                    $"t {mix.CurrentSeconds:0.00}");
+                r.Check("captions: before the first cue no caption shows", narration.CurrentPath == path && narration.CaptionCue == null, $"t {mix.CurrentSeconds:0.00}");
                 RunTo(1.05);
-                r.Check("schedule: the intro starts at its 'at' on the mix clock", narration.Speaking && narration.SpeakingCue == path.Cues[0] &&
-                                                                                    narration.CaptionCue == path.Cues[0] && narration.Starts == 1 &&
-                                                                                    Math.Abs(narration.VoiceSeconds - (mix.CurrentSeconds - 1.0)) < 1e-6,
-                    $"t {mix.CurrentSeconds:0.000}, voice {narration.VoiceSeconds:0.000}");
-                RunTo(1.3);
-                r.Check("schedule: the mix is ducked to the cue's duck_db after the attack",
-                    Mathf.Abs(narration.DuckGainDb - (float)path.Cues[0].DuckDb) < .01f && Mathf.Abs(mix.DuckGain - Mathf.Pow(10f, (float)path.Cues[0].DuckDb / 20f)) < 1e-3f,
-                    $"{narration.DuckGainDb:0.00} dB");
-
-                // Pause: the clock stands, the voice stops being heard, the line stays.
+                r.Check("captions: the intro's caption appears at its 'at' on the mix clock", narration.CaptionCue == path.Cues[0] && narration.CaptionsShown == 1,
+                    $"t {mix.CurrentSeconds:0.000}");
+                // Pause: the clock stands, the caption stays.
                 mix.Paused = true;
                 double pausedAt = mix.CurrentSeconds;
                 Run(1.0);
-                bool pausedOk = Math.Abs(mix.CurrentSeconds - pausedAt) < 1e-9 && !narration.Speaking && narration.CaptionCue == path.Cues[0] && narration.DuckGainDb > -.01f;
+                bool pausedOk = Math.Abs(mix.CurrentSeconds - pausedAt) < 1e-9 && narration.CaptionCue == path.Cues[0];
                 mix.Paused = false;
                 Run(.2);
-                r.Check("schedule: pause holds the cue in sync (silent, caption kept, duck released) and resume continues it",
-                    pausedOk && narration.Speaking && narration.SpeakingCue == path.Cues[0] && narration.Starts == 1 &&
-                    Math.Abs(narration.VoiceSeconds - (mix.CurrentSeconds - 1.0)) < 1e-6, $"t {mix.CurrentSeconds:0.00}");
-
-                RunTo(5.0 + .7);
-                r.Check("schedule: after the line ends and the release passes, nothing is ducked",
-                    !narration.Speaking && narration.CaptionCue == null && mix.DuckGain == 1f, $"t {mix.CurrentSeconds:0.00}, {narration.DuckGainDb:0.00} dB");
-
-                // A jump into the middle of a sentence (Next / a chip) does not start it mid-way.
+                r.Check("captions: pause holds the clock and the caption; resume goes on", pausedOk && narration.CaptionCue == path.Cues[0] && narration.CaptionsShown == 1);
+                RunTo(End(0) - .05);
+                bool held = narration.CaptionCue == path.Cues[0];
+                RunTo(End(0) + .05);
+                r.Check("captions: the caption is held through its reading window (at least the spoken length), then goes",
+                    held && narration.CaptionCue == null && End(0) >= path.Cues[0].End, $"window ends {End(0):0.00} s (spoken to {path.Cues[0].End:0.00} s)");
+                // A jump into the middle of a line shows that line (there is no voice to wait for).
                 mix.Seek(14.0);
                 Run(.1);
-                r.Check("schedule: a seek into the middle of a line shows its caption but waits for the next cue (no duck)",
-                    !narration.Speaking && narration.CaptionCue == path.Cues[1] && narration.LateSkips >= 1 && mix.DuckGain == 1f, $"t {mix.CurrentSeconds:0.00}");
-                // Back to just before it: it starts on time.
+                r.Check("captions: a seek into the middle of a line shows its caption at once", narration.CaptionCue == path.Cues[1], $"t {mix.CurrentSeconds:0.00}");
                 mix.Seek(11.7);
                 Run(.1);
-                bool waiting = !narration.Speaking;
+                bool waiting = narration.CaptionCue == null;
                 RunTo(12.1);
-                r.Check("schedule: a seek back before a cue starts it at its time",
-                    waiting && narration.Speaking && narration.SpeakingCue == path.Cues[1] && narration.VoiceSeconds < .15, $"voice {narration.VoiceSeconds:0.000}");
-                // A seek inside the speaking line keeps it, re-synced to the mix.
-                mix.Seek(12.6);
-                Run(.04);
-                r.Check("schedule: a seek within the speaking line keeps it in sync",
-                    narration.SpeakingCue == path.Cues[1] && Math.Abs(narration.VoiceSeconds - (mix.CurrentSeconds - 12.0)) < 1e-6, $"voice {narration.VoiceSeconds:0.000} at {mix.CurrentSeconds:0.000}");
-                // A jump to just after a cue's start (within the join window) joins it.
-                mix.Seek(30.4);
-                Run(.04);
-                r.Check("schedule: a jump just after a cue's start joins it at the right offset",
-                    narration.Speaking && narration.SpeakingCue == path.Cues[2] && Math.Abs(narration.VoiceSeconds - (mix.CurrentSeconds - 30.0)) < 1e-6,
-                    $"voice {narration.VoiceSeconds:0.000}");
-
-                // Narration off: silence, no duck after the release, no caption; on again waits for the next cue.
+                r.Check("captions: a seek back before a cue shows nothing until its time", waiting && narration.CaptionCue == path.Cues[1]);
+                // Captions off (N): nothing shows; on again, the line of the moment.
                 RunTo(31.5);
                 narration.SetOn(false);
-                Run(.7);
-                bool offOk = !narration.Speaking && narration.CaptionCue == null && mix.DuckGain == 1f;
+                Run(.3);
+                bool offOk = narration.CaptionCue == null;
                 narration.SetOn(true);
                 Run(.1);
-                r.Check("schedule: N off silences and un-ducks; on again mid-line waits for the next cue",
-                    offOk && !narration.Speaking && narration.CaptionCue == path.Cues[2], $"t {mix.CurrentSeconds:0.00}");
-
-                // Stop: the tour ends (no mashup plays) → silence and no duck at once.
+                r.Check("captions: N hides the captions and shows them again", offOk && narration.CaptionCue == path.Cues[2], $"t {mix.CurrentSeconds:0.00}");
+                // Stop: the tour ends (no mashup plays) → no caption at once.
                 RunTo(50.2);
-                bool outro = narration.Speaking && narration.SpeakingCue == path.Cues[3];
+                bool outro = narration.CaptionCue == path.Cues[3];
                 mix.Stop();
                 current = null;
                 narration.Advance(dt);
-                r.Check("schedule: Stop silences the cue and opens the duck at once",
-                    outro && !narration.Speaking && narration.CurrentPath == null && narration.CaptionCue == null && mix.DuckGain == 1f && narration.DuckGainDb == 0f);
+                r.Check("captions: Stop clears the caption at once", outro && narration.CurrentPath == null && narration.CaptionCue == null);
 
-                // A mashup without narration is never ducked.
-                Mashup other = SyntheticMashup("unnarrated", 40);
-                current = other;
-                mix.PlayMix(other, 0, tag);
-                float lowest = 1f;
-                for (int k = 0; k < 2000 && mix.CurrentSeconds < 39; k++)
-                {
-                    mix.Advance(.02);
-                    narration.Advance(.02);
-                    lowest = Mathf.Min(lowest, mix.DuckGain);
-                }
-                r.Check("schedule: a mashup without narration plays through without a single ducked frame", lowest == 1f && narration.CurrentPath == null && !narration.Speaking);
-
-                // The whole fixture mix: speaking time equals the cues' spoken seconds (±1 frame each).
+                // Over the whole mix: every cue's caption appears once, at its time; no voiceover at all.
                 current = m;
                 mix.PlayMix(m, 0, tag);
-                double spoken = 0, ducked = 0;
+                narration.Advance(0);
+                int before = narration.CaptionsShown;
+                List<string> late = new();
+                NarrationCue? last = null;
                 for (int k = 0; k < 10000 && !mix.Complete; k++)
                 {
-                    mix.Advance(.02);
-                    narration.Advance(.02);
-                    if (narration.Speaking) spoken += .02;
-                    if (mix.DuckGain < 1f) ducked += .02;
+                    Step();
+                    NarrationCue? c = narration.CaptionCue;
+                    if (c != null && !ReferenceEquals(c, last) && mix.CurrentSeconds - c.At > dt + 1e-6) late.Add($"{c.Id} at {mix.CurrentSeconds:0.00}");
+                    last = c;
                 }
-                r.Check("schedule: over the whole mix, narration speaks for exactly its cues' length",
-                    Math.Abs(spoken - path.SpokenSeconds) <= (path.Cues.Count + 1) * .02 + 1e-6 && ducked >= spoken && ducked <= spoken + path.Cues.Count * (.6 + .04),
-                    $"spoken {spoken:0.00} s of {path.SpokenSeconds:0.00} s, ducked {ducked:0.00} s");
+                AudioSource[] sources = host.GetComponentsInChildren<AudioSource>(true);
+                r.Check("captions: over the whole mix every cue's caption appears once, on time",
+                    narration.CaptionsShown - before == path.Cues.Count && late.Count == 0, $"{narration.CaptionsShown - before} of {path.Cues.Count}; late {string.Join(", ", late)}");
+                r.Check("no voiceover: no narration AudioSource or clip, nothing speaks, the music stays at full gain through every cue",
+                    sources.Length == 0 && narration.Source == null && !narration.Speaking && narration.SpeakingCue == null && lowest == 1f && narration.DuckGain == 1f &&
+                    narration.AllLoaded(path), $"{sources.Length} audio sources; lowest mix gain {lowest:0.000}");
             }
             finally
             {
@@ -452,8 +426,16 @@ namespace MusicHistory.EditorTools
             r.Check("layout: vertical text is readable at 1080x1920 (caption ≥ 30 px, photo subject ≥ 20 px, credit ≥ 13 px on screen)",
                 v.CaptionFont * vs >= 30f && v.SubjectFont * vs >= 20f && v.CreditFont * vs >= 13f && v.CaptionMinFont * vs >= 22f,
                 $"scale {vs:0.000}: caption {v.CaptionFont * vs:0.#} px, subject {v.SubjectFont * vs:0.#} px, credit {v.CreditFont * vs:0.#} px");
-            r.Check("layout: the vertical graph view is at least a third of the screen",
-                v.MashupView.height >= .3f, $"{v.MashupView.height:0.000}");
+            // The portrait melody graph is three times larger (DESIGN.md §16), so the 3D view above it
+            // gets less of the frame than before (it was at least a third).
+            r.Check("layout: the vertical graph view is at least a quarter of the screen, above the 3x melody graph",
+                v.MashupView.height >= .25f && Mathf.Approximately(v.Melody.height, MelodyGraphPanel.PortraitPanelHeight),
+                $"{v.MashupView.height:0.000}; melody graph {v.Melody.height:0} px tall");
+            LayoutFrame duet = ViewerLayout.Compute(1080, 1920, true, false, false, NominalLegend, NominalInfo, ViewerLayout.DefaultTourView, ViewerLayout.DefaultMashupView);
+            r.Check("layout: vertical without narration (a duet loop): the melody graph sits right above the strip, the view gets the band's room",
+                duet.Melody.yMin <= duet.Strip.yMax + ViewerLayout.BandGap + .01f && duet.MashupView.yMin * duet.Canvas.y >= duet.Melody.yMax &&
+                duet.MashupView.height > v.MashupView.height,
+                $"melody {duet.Melody}, view y {duet.MashupView.yMin:0.000}–{duet.MashupView.yMax:0.000}");
 
             foreach ((int w, int hh, string label) in Screens)
                 foreach (bool melody in new[] { true, false })
@@ -507,7 +489,8 @@ namespace MusicHistory.EditorTools
                 n.Problems.Count > 0 ? $"{n.Problems.Count} problems, first: {string.Join(" | ", n.Problems.Take(5))}" : n.Status);
             List<NarrationCue> cues = n.Paths.SelectMany(p => p.Cues).ToList();
             List<NarrationCue> noFile = cues.Where(c => !c.FileExists).ToList();
-            r.Check("real: every cue's WAV exists", noFile.Count == 0, noFile.Count > 0 ? $"{noFile.Count} missing, first {noFile[0].AbsoluteFile}" : $"{cues.Count} cues");
+            // The WAVs are kept for future reference (never played): they should still be there.
+            r.Check("real: every cue's WAV exists (kept on disk, never played)", noFile.Count == 0, noFile.Count > 0 ? $"{noFile.Count} missing, first {noFile[0].AbsoluteFile}" : $"{cues.Count} cues");
             List<NarrationCue> withImage = cues.Where(c => c.HasImage).ToList();
             List<string> badImages = withImage.Where(c => images.Find(c.Image) is not ArtistImage a || !a.Showable || a.Author.Length == 0)
                 .Select(c => c.Image).Distinct().ToList();

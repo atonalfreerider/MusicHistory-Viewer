@@ -93,9 +93,12 @@ namespace MusicHistory.Viewer
     /// follows a resized Game view and the Unity Recorder's output size). Horizontal keeps the
     /// 1920x1080 layout. Vertical (portrait, height &gt; 1.2 x width) scales the canvases to a
     /// 1280-wide reference (the 1240-wide strip and melody graph fit with 20 px margins) and stacks,
-    /// from the top: the graph view, the melody graph, the narration band (photo card beside the
-    /// caption) and the now-playing strip; the Paths button moves to the top right and the legend /
-    /// song info start under it. <see cref="RecordingMode"/> hides the legend and the Paths button.
+    /// from the top: the graph view, the melody graph (three times larger than in landscape and
+    /// panning under a centred playhead, <see cref="MelodyGraphPanel.PortraitPanelHeight"/>), the
+    /// narration band (photo card beside the caption; only while a narrated mix plays, otherwise the
+    /// graph sits right above the strip) and the now-playing strip; the Paths button moves to the
+    /// top right and the legend / song info start under it. <see cref="RecordingMode"/> hides the
+    /// legend and the Paths button.
     /// </summary>
     [DefaultExecutionOrder(50)]
     public sealed class ViewerLayout : MonoBehaviour
@@ -105,7 +108,7 @@ namespace MusicHistory.Viewer
         public const float Margin = 20f;
         public const float StripBottom = 16f;
         /// <summary>Vertical: height of the narration band between the strip and the melody graph.</summary>
-        public const float BandHeight = 500f;
+        public const float BandHeight = 330f;
         public const float BandGap = 14f;
         /// <summary>Vertical: the photo card's width (the caption takes the rest of the band).</summary>
         public const float VerticalCardWidth = 400f;
@@ -130,6 +133,16 @@ namespace MusicHistory.Viewer
         SongGraphLoader? loader;
         Rect baseTour, baseMashup;
         bool captured, applied, recordingApplied;
+
+        /// <summary>
+        /// Lay out for this screen size instead of Screen.width / Screen.height (edit-mode validation
+        /// renders portrait frames without a Game view of that size); null = the real screen.
+        /// </summary>
+        public static Vector2Int? ScreenOverride;
+
+        /// <summary>The screen size the layout follows: <see cref="ScreenOverride"/>, else Screen.width / Screen.height.</summary>
+        public static Vector2Int CurrentScreen() =>
+            ScreenOverride ?? new Vector2Int(Mathf.Max(1, Screen.width), Mathf.Max(1, Screen.height));
 
         public static ScreenFormat FormatFor(float width, float height) =>
             height > width * 1.2f ? ScreenFormat.Vertical : ScreenFormat.Horizontal;
@@ -168,14 +181,15 @@ namespace MusicHistory.Viewer
             Vector2 c = CanvasSize(width, height, f);
             float W = c.x, H = c.y;
             float stripW = FeaturedPathsPanel.StripWidth, stripH = FeaturedPathsPanel.StripHeight;
-            float melodyH = MelodyGraphPanel.PanelHeight;
+            float melodyH = MelodyGraphPanel.HeightFor(f == ScreenFormat.Vertical);
             Rect strip = new(W * .5f - stripW * .5f, StripBottom, stripW, stripH);
             float stripTop = strip.yMax;
 
             if (f == ScreenFormat.Vertical)
             {
                 Rect band = new(strip.xMin, stripTop + BandGap, stripW, BandHeight);
-                Rect melodyRect = new(strip.xMin, band.yMax + BandGap, stripW, melodyH);
+                // The narration band only while a narrated mix plays; otherwise the graph sits on the strip.
+                Rect melodyRect = new(strip.xMin, (narrated ? band.yMax : stripTop) + BandGap, stripW, melodyH);
                 Rect button = new(W - Margin - 252f, H - Margin - 40f, 252f, 40f);
                 Rect legend = new(Margin, H - VerticalPanelTop - legendHeight, 660f, legendHeight);
                 Rect info = new(W - Margin - 540f, H - VerticalPanelTop - infoHeight, 540f, infoHeight);
@@ -256,7 +270,8 @@ namespace MusicHistory.Viewer
                 baseTour = d.TourViewport;
                 baseMashup = d.MashupTourViewport;
             }
-            int w = Mathf.Max(1, Screen.width), h = Mathf.Max(1, Screen.height);
+            Vector2Int screen = CurrentScreen();
+            int w = screen.x, h = screen.y;
             bool narrated = l.Narration != null && l.Narration.NarrationOn && l.Narration.CurrentPath != null;
             bool melody = l.MelodyGraph != null && l.MelodyGraph.Showing;
             bool photo = l.NarrationOverlay != null && l.NarrationOverlay.CardShowing;

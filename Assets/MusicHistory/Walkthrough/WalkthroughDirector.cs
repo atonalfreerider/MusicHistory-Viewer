@@ -42,6 +42,13 @@ namespace MusicHistory.Walkthrough
     /// instrumental plays; during a changeover the vocal's song and the edge between the two light
     /// up too, and the camera frames both. Next / Back / a chip jump to where a song's vocal
     /// enters. "Compare" (C) still plays the MIDI.
+    ///
+    /// A path with a duet loop (data/audio/duets/duets.json, <see cref="DuetCatalog"/>, DESIGN.md §16)
+    /// can play it instead (<see cref="StartPathTour(FeaturedPath, bool)"/>, <see cref="SwitchVariant"/>):
+    /// two vocals at all times over the root song's bed, pair k = S_k + S_(k+1), looping for ever on
+    /// <see cref="DuetPlayer"/>, with no narration. The step is the pair playing; both singers glow
+    /// and the edge between them lights up; during a handoff the borrowed instrumental's song is
+    /// marked; the camera frames the pair. Next / Back / a chip jump between pairs (round the loop).
     /// </summary>
     public sealed class WalkthroughDirector : MonoBehaviour
     {
@@ -75,8 +82,8 @@ namespace MusicHistory.Walkthrough
         public MashupCatalog Mashups { get; private set; } = MashupCatalog.Empty("not loaded");
         /// <summary>The current path's mashup (null when it has none), whether or not "compare" plays MIDI now.</summary>
         public Mashup? PathMashup { get; private set; }
-        /// <summary>The mashup mix the path tour is playing (null: per-step previews or MIDI).</summary>
-        public Mashup? CurrentMashup => IsTouring && Mode == TourMode.Path && !ApplesToApples ? PathMashup : null;
+        /// <summary>The mashup mix the path tour is playing (null: per-step previews, MIDI or the duet loop).</summary>
+        public Mashup? CurrentMashup => IsTouring && Mode == TourMode.Path && !ApplesToApples && !DuetMode ? PathMashup : null;
         /// <summary>Index of the mashup segment playing (-1 when no mashup plays).</summary>
         public int SegmentIndex { get; private set; } = -1;
         public MashupSegment? CurrentSegment => CurrentMashup is Mashup m && SegmentIndex >= 0 && SegmentIndex < m.Segments.Count ? m.Segments[SegmentIndex] : null;
@@ -84,8 +91,31 @@ namespace MusicHistory.Walkthrough
         public int VocalStepIndex { get; private set; } = -1;
         /// <summary>Seconds into the mashup mix (0 when none plays).</summary>
         public double MixSeconds => CurrentMashup != null && MashupAudio != null ? MashupAudio.CurrentSeconds : 0;
-        /// <summary>Raised when the mashup moves into another segment (or jumps).</summary>
+        /// <summary>Raised when the mashup or the duet loop moves into another segment (or jumps).</summary>
         public event Action? SegmentChanged;
+        /// <summary>Plays a featured path's duet loop (data/audio/duets) when the duet variant is chosen.</summary>
+        public DuetPlayer? DuetAudio { get; private set; }
+        /// <summary>The duet loops (data/audio/duets/duets.json), bound to the graph and the paths.</summary>
+        public DuetCatalog Duets { get; private set; } = DuetCatalog.Empty("not loaded");
+        /// <summary>The current path's duet loop (null when it has none).</summary>
+        public DuetLoop? PathDuet { get; private set; }
+        /// <summary>The path tour plays its duet loop (the variant chosen; "compare" still plays MIDI).</summary>
+        public bool DuetMode { get; private set; }
+        /// <summary>The duet loop the path tour is playing (null: the narrated mix, previews or MIDI).</summary>
+        public DuetLoop? CurrentDuet => IsTouring && Mode == TourMode.Path && DuetMode && !ApplesToApples ? PathDuet : null;
+        /// <summary>Index of the duet segment playing (-1 when no duet loop plays).</summary>
+        public int DuetSegmentIndex { get; private set; } = -1;
+        public DuetSegment? CurrentDuetSegment => CurrentDuet is DuetLoop l && DuetSegmentIndex >= 0 && DuetSegmentIndex < l.Segments.Count ? l.Segments[DuetSegmentIndex] : null;
+        /// <summary>The pair playing (0..n-1: S_k + S_(k+1)); -1 when no duet loop plays.</summary>
+        public int DuetPair { get; private set; } = -1;
+        /// <summary>Path steps of the two singers now (S_k, S_(k+1)), and of a handoff's borrowed instrumental (-1 when none).</summary>
+        public int DuetSingerA { get; private set; } = -1;
+        public int DuetSingerB { get; private set; } = -1;
+        public int DuetBorrowedStep { get; private set; } = -1;
+        /// <summary>Seconds into the duet loop (0 ≤ t &lt; its length; 0 when none plays).</summary>
+        public double LoopSeconds => CurrentDuet != null && DuetAudio != null ? DuetAudio.CurrentSeconds : 0;
+        /// <summary>Passes through the loop point since the duet loop started.</summary>
+        public int LoopCycle => CurrentDuet != null && DuetAudio != null ? DuetAudio.Cycle : 0;
         public string PlayerDescription { get; private set; } = "";
         public bool IsTouring { get; private set; }
         /// <summary>The last step's excerpt has ended.</summary>
@@ -163,6 +193,8 @@ namespace MusicHistory.Walkthrough
             if (MashupAudio == null) MashupAudio = gameObject.AddComponent<MashupPlayer>();
             MashupAudio.MixFinished -= OnMixFinished;
             MashupAudio.MixFinished += OnMixFinished;
+            DuetAudio = GetComponent<DuetPlayer>();
+            if (DuetAudio == null) DuetAudio = gameObject.AddComponent<DuetPlayer>();
             if (Player != null && !ReferenceEquals(Player, Silent))
             {
                 Player.Finished -= OnClipFinished;
@@ -191,6 +223,16 @@ namespace MusicHistory.Walkthrough
 
         /// <summary>The playable mashup of <paramref name="path"/> (null: it plays per-step previews).</summary>
         public Mashup? MashupFor(FeaturedPath? path) => PreferMashups ? Mashups.For(path) : null;
+
+        /// <summary>The duet loops path tours play in the duet variant (the loader binds them first).</summary>
+        public void UseDuets(DuetCatalog catalog)
+        {
+            Duets = catalog ?? DuetCatalog.Empty("none");
+            if (IsTouring && Mode == TourMode.Path) Exit();
+        }
+
+        /// <summary>The playable duet loop of <paramref name="path"/> (null: it has none).</summary>
+        public DuetLoop? DuetFor(FeaturedPath? path) => Duets.For(path);
 
         /// <summary>
         /// Replaces the discovered player (a custom synth, or a probe in validation). Songs whose
@@ -301,9 +343,17 @@ namespace MusicHistory.Walkthrough
         /// Plays the steps of featured path <paramref name="path"/> in order (each from its recording
         /// preview when the render exists). False when a step's song is not in the graph.
         /// </summary>
-        public bool StartPathTour(FeaturedPath path)
+        public bool StartPathTour(FeaturedPath path) => StartPathTour(path, false);
+
+        /// <summary>
+        /// As <see cref="StartPathTour(FeaturedPath)"/>; <paramref name="duet"/> plays the path's duet
+        /// loop instead (false when it has none).
+        /// </summary>
+        public bool StartPathTour(FeaturedPath path, bool duet)
         {
             if (Loader.Data == null || path == null || !path.IsPlayable) return false;
+            DuetLoop? loop = DuetFor(path);
+            if (duet && loop == null) return false;
             List<int> planned = new();
             foreach (PathStep step in path.Steps)
             {
@@ -311,10 +361,27 @@ namespace MusicHistory.Walkthrough
                 planned.Add(step.NodeId);
             }
             if (Mode != TourMode.Path) modeBeforePath = Mode;
+            // Another variant or path replaces the one playing: its player stops first.
+            if (IsTouring) ActivePlayer?.Stop();
             CurrentPath = path;
             CurrentRoute = Loader.RouteFor(path);
             PathMashup = MashupFor(path);
+            PathDuet = loop;
+            DuetMode = duet;
             return Begin(TourMode.Path, planned, null);
+        }
+
+        /// <summary>
+        /// K while a path plays: the other variant of the same path (its duet loop, or back to its
+        /// narrated mix / previews), from the top. False when the path has no duet loop.
+        /// </summary>
+        public bool SwitchVariant()
+        {
+            if (!IsTouring || Mode != TourMode.Path || CurrentPath == null) return false;
+            FeaturedPath path = CurrentPath;
+            bool toDuet = !DuetMode;
+            if (toDuet && DuetFor(path) == null) return false;
+            return StartPathTour(path, toDuet);
         }
 
         bool Begin(TourMode mode, List<int> planned, int? familyId)
@@ -325,9 +392,12 @@ namespace MusicHistory.Walkthrough
                 CurrentPath = null;
                 CurrentRoute = null;
                 PathMashup = null;
+                PathDuet = null;
+                DuetMode = false;
             }
             SegmentIndex = -1;
             VocalStepIndex = -1;
+            ResetDuetState();
             framedPair = (-1, -1);
             grownEdges.Clear();
             Mode = mode;
@@ -346,11 +416,17 @@ namespace MusicHistory.Walkthrough
         public void GoTo(int index)
         {
             if (!IsTouring || steps.Count == 0) return;
+            if (CurrentDuet != null)
+            {
+                GoToDuet(index);
+                return;
+            }
             if (CurrentMashup != null)
             {
                 GoToMashup(index);
                 return;
             }
+            ResetDuetState();
             SegmentIndex = -1;
             VocalStepIndex = -1;
             framedPair = (-1, -1);
@@ -442,7 +518,7 @@ namespace MusicHistory.Walkthrough
 
         /// <summary>Screen area the current step is framed into (above the melody graph while a mashup shows it).</summary>
         public Rect FramingViewport =>
-            CurrentMashup != null && Loader != null && Loader.MelodyGraph != null && Loader.MelodyGraph.UserVisible ? MashupTourViewport : TourViewport;
+            (CurrentMashup != null || CurrentDuet != null) && Loader != null && Loader.MelodyGraph != null && Loader.MelodyGraph.UserVisible ? MashupTourViewport : TourViewport;
 
         /// <summary>Flies the camera to frame <paramref name="child"/> with <paramref name="partner"/>.</summary>
         void FlyTo(SongNode child, SongNode? partner)
@@ -552,6 +628,84 @@ namespace MusicHistory.Walkthrough
             return GraphRoute.Between(Loader.NodeById(steps[i]), Loader.NodeById(steps[j]));
         }
 
+        // ------------------------------------------------------------------ duet loops
+
+        void ResetDuetState()
+        {
+            DuetSegmentIndex = -1;
+            DuetPair = -1;
+            DuetSingerA = DuetSingerB = DuetBorrowedStep = -1;
+        }
+
+        /// <summary>Duet loop: plays pair <paramref name="index"/> (S_index + S_index+1) from its start (its entering handoff).</summary>
+        void GoToDuet(int index)
+        {
+            DuetLoop l = CurrentDuet!;
+            DuetPlayer player = DuetAudio!;
+            int n = Math.Max(1, l.Pairs);
+            int pair = ((index % n) + n) % n;
+            advancePending = false;
+            TourComplete = false;
+            if (ActivePlayer != null && !ReferenceEquals(ActivePlayer, player)) ActivePlayer.Stop();
+            ActivePlayer = player;
+            ResetWatchdog();
+            player.MorphBars = MorphBars;
+            (int a, _) = l.PairSongs(pair);
+            int step = Mathf.Clamp(l.StepOf(a), 0, steps.Count - 1);
+            player.PlayLoop(l, l.PairStartSeconds(pair), Loader.NodeById(steps[step]).Song.ToClip());
+            SyncDuet(player.CurrentSeconds, force: true);
+            UpdateTourHud();
+        }
+
+        /// <summary>Follows the loop: a new segment changes the pair, the highlight, the edge and the framing.</summary>
+        void SyncDuet(double t, bool force = false)
+        {
+            DuetLoop? l = CurrentDuet;
+            if (l == null || CurrentRoute == null) return;
+            int si = l.SegmentIndexAt(t);
+            if (si < 0 || (si == DuetSegmentIndex && !force)) return;
+            DuetSegmentIndex = si;
+            DuetSegment g = l.Segments[si];
+            DuetPair = g.Pair;
+            // The pair in path order: S_k (its leading song) first, S_(k+1) second.
+            (int pa, int pb) = l.PairSongs(g.Pair);
+            int a = Mathf.Clamp(l.StepOf(pa), 0, steps.Count - 1), b = Mathf.Clamp(l.StepOf(pb), 0, steps.Count - 1);
+            DuetSingerA = a;
+            DuetSingerB = b;
+            int borrowed = g.IsHandoff && g.InstrumentalSong >= 0 && g.InstrumentalSong != l.RootSong ? l.StepOf(g.InstrumentalSong) : -1;
+            DuetBorrowedStep = borrowed;
+            StepIndex = Mathf.Clamp(DuetPair, 0, steps.Count - 1);
+            VocalStepIndex = -1;
+            SongNode first = Loader.NodeById(steps[a]), second = Loader.NodeById(steps[b]);
+            SongNode? marked = borrowed >= 0 && borrowed != a && borrowed != b ? Loader.NodeById(steps[borrowed]) : null;
+            InfluenceEdge? edge = a != b ? EdgeBetweenSteps(a, b) : null;
+            if (CurrentClip == null || CurrentClip.NodeId != second.NodeId) CurrentClip = second.Song.ToClip();
+            PreviousClip = first.Song.ToClip();
+            CurrentWindow = null;
+            StepEdge = edge;
+            StepPartner = first;
+            Loader.Highlighter.ShowDuetStep(first, second, marked, edge, CurrentRoute);
+            Loader.Hud.ShowSong(second);
+            // Each edge grows once per tour, the first time its two songs sing together.
+            if (edge != null && grownEdges.Add(edge))
+            {
+                if (animatedEdge != null && animatedEdge != edge) animatedEdge.VisibleFraction = 1f;
+                animatedEdge = edge;
+                edgeT = 0f;
+                edge.VisibleFraction = 0f;
+            }
+            (int, int) pair = (Math.Min(first.NodeId, second.NodeId), Math.Max(first.NodeId, second.NodeId));
+            if (pair != framedPair)
+            {
+                framedPair = pair;
+                FlyTo(second, first);
+            }
+            SegmentChanged?.Invoke();
+        }
+
+        /// <summary>"Duet: A + B over Root" (no markup).</summary>
+        public static string DuetDescription(DuetLoop l, DuetSegment g) => l.DuetText(g);
+
         void OnMixFinished(Mashup m)
         {
             if (!IsTouring || !ReferenceEquals(CurrentMashup, m)) return;
@@ -579,6 +733,11 @@ namespace MusicHistory.Walkthrough
         public void RefreshStepHighlight()
         {
             if (!IsTouring || CurrentClip == null) return;
+            if (CurrentDuet != null)
+            {
+                SyncDuet(LoopSeconds, force: true);
+                return;
+            }
             if (CurrentMashup != null)
             {
                 SyncMashup(MixSeconds, force: true);
@@ -615,6 +774,12 @@ namespace MusicHistory.Walkthrough
         public void Next()
         {
             if (!IsTouring) return;
+            if (CurrentDuet is DuetLoop l)
+            {
+                // The next pair, round the loop.
+                GoTo((Math.Max(0, DuetPair) + 1) % Math.Max(1, l.Pairs));
+                return;
+            }
             if (CurrentMashup != null)
             {
                 // To where the next song's vocal enters.
@@ -628,6 +793,13 @@ namespace MusicHistory.Walkthrough
         public void Previous()
         {
             if (!IsTouring) return;
+            if (CurrentDuet is DuetLoop l)
+            {
+                // The previous pair, round the loop.
+                int n = Math.Max(1, l.Pairs);
+                GoTo((Math.Max(0, DuetPair) - 1 + n) % n);
+                return;
+            }
             if (CurrentMashup != null)
             {
                 GoTo(Mathf.Max(0, MashupStepReached - 1));
@@ -661,8 +833,11 @@ namespace MusicHistory.Walkthrough
             CurrentPath = null;
             CurrentRoute = null;
             PathMashup = null;
+            PathDuet = null;
+            DuetMode = false;
             SegmentIndex = -1;
             VocalStepIndex = -1;
+            ResetDuetState();
             framedPair = (-1, -1);
             grownEdges.Clear();
             if (Mode == TourMode.Path) Mode = modeBeforePath;
@@ -702,7 +877,12 @@ namespace MusicHistory.Walkthrough
             if (advancePending)
             {
                 advancePending = false;
-                if (CurrentMashup != null)
+                if (CurrentDuet != null)
+                {
+                    // Only the watchdog gets here on a duet loop: on to the next pair.
+                    Next();
+                }
+                else if (CurrentMashup != null)
                 {
                     // Only the watchdog gets here on a mashup: move on to the next song's entry.
                     int reached = MashupStepReached;
@@ -712,8 +892,9 @@ namespace MusicHistory.Walkthrough
                 else if (StepIndex + 1 < steps.Count) GoTo(StepIndex + 1);
                 else TourComplete = true;
             }
-            // A mashup's segments drive the steps (the mix plays on by itself).
+            // A mashup's segments drive the steps (the mix plays on by itself); a duet loop's likewise.
             if (CurrentMashup != null && MashupAudio != null) SyncMashup(MashupAudio.CurrentSeconds);
+            if (CurrentDuet != null && DuetAudio != null) SyncDuet(DuetAudio.CurrentSeconds);
 
             ISongPlayer? active = ActivePlayer;
             if (active != null && !active.Paused && !TourComplete && !advancePending)
@@ -960,6 +1141,7 @@ namespace MusicHistory.Walkthrough
                 if (p == null) return "";
                 if (ReferenceEquals(p, Preview)) return "recording preview";
                 if (ReferenceEquals(p, MashupAudio)) return "mashup mix";
+                if (ReferenceEquals(p, DuetAudio)) return "duet loop";
                 if (ReferenceEquals(p, Silent))
                     return Player != null && !ReferenceEquals(Player, Silent) ? "silent (MIDI file missing)" : "silent (no synth)";
                 return ApplesToApples ? "synth (compare in C / 120 BPM)" : "synth";
@@ -972,6 +1154,12 @@ namespace MusicHistory.Walkthrough
             SongClip? clip = CurrentClip;
             ISongPlayer? p = ActivePlayer;
             if (clip == null || p == null) return default;
+            if (CurrentDuet is DuetLoop dl && ReferenceEquals(p, DuetAudio))
+            {
+                double t = DuetAudio!.CurrentSeconds;
+                return new StepReadout(true, ActivePlayerName, dl.Key, dl.Key, dl.Key, 0, 0, dl.Bpm, dl.Bpm, dl.Bpm, 1,
+                    t, DuetAudio.DurationSeconds, true, "audio", "audio");
+            }
             if (CurrentMashup != null && ReferenceEquals(p, MashupAudio) && CurrentSegment is MashupSegment g)
             {
                 double t = MashupAudio!.CurrentSeconds;
@@ -1026,6 +1214,18 @@ namespace MusicHistory.Walkthrough
             string position = r.InSeconds
                 ? $"{PathCatalog.Clock(r.Position)} / {PathCatalog.Clock(r.Length)}"
                 : $"beat {Fmt(r.Position, "0.0")}/{Fmt(r.Length, "0")}";
+            if (CurrentDuet is DuetLoop dl && CurrentDuetSegment is DuetSegment dg)
+            {
+                string dm = dg.ChordMatch is double c ? $" · chords match {DuetCatalog.Percent(c)}" : "";
+                string handoff = dg.IsHandoff && dg.InstrumentalSong >= 0 && dg.InstrumentalSong != dl.RootSong
+                    ? $" · handoff over the instrumental of {dl.Songs[dg.InstrumentalSong].Title}" : dg.IsHandoff ? " · handoff" : "";
+                HudText = $"DUET · {path.Title} · pair {DuetPair + 1}/{Math.Max(1, dl.Pairs)} · {state} · {r.Player}\n" +
+                          $"{DuetDescription(dl, dg)}{handoff} · segment {DuetSegmentIndex + 1}/{dl.Segments.Count} ({DuetSegment.KindName(dg.Kind)})\n" +
+                          $"Key {dl.Key} · BPM {Fmt(dl.Bpm, "0.#")}{dm} · LOOP {LoopCycle + 1} · {position}";
+                Loader.Hud.ShowTour("", 0f, Color.clear);
+                if (Loader.Paths != null) Loader.Paths.RefreshNowPlaying();
+                return;
+            }
             if (CurrentMashup is Mashup m && CurrentSegment is MashupSegment g)
             {
                 string match = g.ChordMatch is double cm ? $" · chords match {MashupCatalog.Percent(cm)}" : "";

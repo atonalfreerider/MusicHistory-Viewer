@@ -94,6 +94,29 @@ namespace MusicHistory.Playback
             return t < Math.Max(c.End, end) ? c : null;
         }
 
+        /// <summary>
+        /// When cue <paramref name="index"/>'s caption goes: held for at least its spoken length,
+        /// extended to its reading time (characters / <paramref name="charsPerSecond"/>, at least
+        /// <paramref name="minSeconds"/>) plus <paramref name="hold"/>, but never into the next cue
+        /// (unless the cue itself is spoken past it).
+        /// </summary>
+        public double CaptionEnd(int index, double charsPerSecond, double minSeconds, double hold)
+        {
+            NarrationCue c = Cues[index];
+            double read = Math.Max(minSeconds, c.Text.Length / Math.Max(1, charsPerSecond));
+            double end = c.At + Math.Max(Math.Max(0, c.Seconds), read) + Math.Max(0, hold);
+            if (index + 1 < Cues.Count) end = Math.Min(end, Cues[index + 1].At);
+            return Math.Max(c.End, end);
+        }
+
+        /// <summary>The cue whose caption shows at <paramref name="t"/> with reading times (see <see cref="CaptionEnd"/>).</summary>
+        public NarrationCue? ReadingCaptionAt(double t, double charsPerSecond, double minSeconds, double hold)
+        {
+            int i = IndexAt(t);
+            if (i < 0) return null;
+            return t < CaptionEnd(i, charsPerSecond, minSeconds, hold) ? Cues[i] : null;
+        }
+
         /// <summary>The first cue that starts after <paramref name="t"/> (null when none).</summary>
         public NarrationCue? NextAfter(double t)
         {

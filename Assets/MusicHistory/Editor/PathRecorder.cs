@@ -34,6 +34,12 @@ namespace MusicHistory.EditorTools
     ///
     /// The menu records the path playing or selected in the featured-paths panel (play mode), else
     /// the path recorded last, else the first narrated path with a mashup.
+    ///
+    /// Duet loops (DESIGN.md §16): MusicHistory › Record duet loop › Horizontal / Vertical, or
+    /// <c>-variant duet</c> on the command line (default <c>narrated</c>), record the path's duet loop
+    /// instead (no narration): one full cycle from the loop's start plus the first
+    /// <see cref="DuetTailBars"/> bars after the wrap, so the seamless loop point is in the video.
+    /// Output: &lt;MusicHistory&gt;/data/recordings/&lt;path id&gt;_duet_&lt;format&gt;.mp4.
     /// </summary>
     public static class PathRecorder
     {
@@ -42,6 +48,9 @@ namespace MusicHistory.EditorTools
         const string LastPathPref = "MusicHistory.PathRecorder.LastPath";
         const string ScenePath = "Assets/Scenes/SongInfluenceGraph.unity";
         const string Menu = "MusicHistory/Record narrated path/";
+        const string DuetMenu = "MusicHistory/Record duet loop/";
+        /// <summary>Bars recorded after the duet loop's wrap (the loop point plays seamlessly into its start).</summary>
+        public const int DuetTailBars = 4;
         public const int Fps = 30;
         /// <summary>Seconds of picture after the tour ends.</summary>
         public const float TailSeconds = 1.5f;
@@ -52,7 +61,8 @@ namespace MusicHistory.EditorTools
         static RecorderController? controller;
         static SongGraphLoader? loader;
         static FeaturedPath? path;
-        static bool vertical, exitWhenDone;
+        static bool vertical, exitWhenDone, duet;
+        static double duetStart, duetLength;
         static int width, height, tailEndFrame, resizeFrames;
         static double deadline, recordDeadline;
         static string output = "";
@@ -68,37 +78,63 @@ namespace MusicHistory.EditorTools
         [MenuItem(Menu + "Vertical 1080x1920", true)]
         static bool CanRecord() => phase == Phase.Idle;
 
+        [MenuItem(DuetMenu + "Horizontal 1920x1080", priority = 1)]
+        static void RecordDuetHorizontal() => Begin(MenuPathId(), false, false, true);
+
+        [MenuItem(DuetMenu + "Vertical 1080x1920", priority = 2)]
+        static void RecordDuetVertical() => Begin(MenuPathId(), true, false, true);
+
+        [MenuItem(DuetMenu + "Horizontal 1920x1080", true)]
+        [MenuItem(DuetMenu + "Vertical 1080x1920", true)]
+        static bool CanRecordDuet() => phase == Phase.Idle;
+
+        [MenuItem(DuetMenu + "Stop recording", priority = 20)]
+        static void StopDuetFromMenu() => Finish("stopped from the menu", 4);
+
+        [MenuItem(DuetMenu + "Stop recording", true)]
+        static bool CanStopDuet() => CanStop();
+
         [MenuItem(Menu + "Stop recording", priority = 20)]
         static void StopFromMenu() => Finish("stopped from the menu", 4);
 
         [MenuItem(Menu + "Stop recording", true)]
         static bool CanStop() => phase != Phase.Idle || SessionState.GetString(RequestKey, "").Length > 0;
 
-        /// <summary>-executeMethod entry: -path &lt;id&gt; -format horizontal|vertical.</summary>
+        /// <summary>-executeMethod entry: -path &lt;id&gt; -format horizontal|vertical [-variant narrated|duet].</summary>
         public static void Record()
         {
             string? id = Arg("-path");
             string format = (Arg("-format") ?? "horizontal").Trim().ToLowerInvariant();
+            string variant = (Arg("-variant") ?? "narrated").Trim().ToLowerInvariant();
             if (format != "horizontal" && format != "vertical")
             {
                 Debug.LogError($"[record] -format must be horizontal or vertical, not '{format}'.");
                 EditorApplication.Exit(2);
                 return;
             }
+            if (variant != "narrated" && variant != "duet")
+            {
+                Debug.LogError($"[record] -variant must be narrated or duet, not '{variant}'.");
+                EditorApplication.Exit(2);
+                return;
+            }
             if (Application.isBatchMode)
                 Debug.LogWarning("[record] -batchmode has no Game view to record: run Unity without -batchmode (the editor quits when the video is written).");
-            Begin(string.IsNullOrWhiteSpace(id) ? null : id, format == "vertical", exitWhenDone: true);
+            Begin(string.IsNullOrWhiteSpace(id) ? null : id, format == "vertical", exitWhenDone: true, variant == "duet");
         }
 
-        /// <summary>Records path <paramref name="pathId"/> (null: the menu's choice) in the given format.</summary>
-        public static void Begin(string? pathId, bool portrait, bool exitWhenDone)
+        /// <summary>
+        /// Records path <paramref name="pathId"/> (null: the menu's choice) in the given format;
+        /// <paramref name="duetLoop"/> records its duet loop instead of its narrated mix.
+        /// </summary>
+        public static void Begin(string? pathId, bool portrait, bool exitWhenDone, bool duetLoop = false)
         {
             if (phase != Phase.Idle)
             {
                 Debug.LogWarning("[record] a recording is already running (MusicHistory › Record narrated path › Stop recording).");
                 return;
             }
-            SessionState.SetString(RequestKey, $"{(portrait ? "v" : "h")}|{(exitWhenDone ? "1" : "0")}|{pathId ?? ""}");
+            SessionState.SetString(RequestKey, $"{(portrait ? "v" : "h")}|{(exitWhenDone ? "1" : "0")}|{(duetLoop ? "d" : "n")}|{pathId ?? ""}");
             if (EditorApplication.isPlaying)
             {
                 Wait();
@@ -146,11 +182,12 @@ namespace MusicHistory.EditorTools
 
         static void Wait()
         {
-            string[] request = SessionState.GetString(RequestKey, "h|0|").Split(new[] { '|' }, 3);
+            string[] request = SessionState.GetString(RequestKey, "h|0|n|").Split(new[] { '|' }, 4);
             SessionState.EraseString(RequestKey);
             vertical = request[0] == "v";
             exitWhenDone = request.Length > 1 && request[1] == "1";
-            requestedId = request.Length > 2 && request[2].Length > 0 ? request[2] : null;
+            duet = request.Length > 2 && request[2] == "d";
+            requestedId = request.Length > 3 && request[3].Length > 0 ? request[3] : null;
             width = vertical ? 1080 : 1920;
             height = vertical ? 1920 : 1080;
             output = "";
@@ -187,7 +224,7 @@ namespace MusicHistory.EditorTools
                         return;
                     }
                     loader = l;
-                    path = Choose(l, requestedId, out string why);
+                    path = Choose(l, requestedId, duet, out string why);
                     if (path == null)
                     {
                         Finish(why, 3);
@@ -202,15 +239,15 @@ namespace MusicHistory.EditorTools
                     if (l.MelodyGraph != null) l.MelodyGraph.SetUserVisible(true);
                     if (d.IsTouring) d.Exit();
                     l.Paths.Select(l.Paths.Paths.ToList().IndexOf(path));
-                    if (!l.Paths.PlaySelected())
+                    if (duet ? !l.Paths.PlaySelectedDuet() : !l.Paths.PlaySelected())
                     {
-                        Finish($"path '{path.Id}' could not start ({l.Paths.Notice})", 3);
+                        Finish($"path '{path.Id}' could not start{(duet ? " its duet loop" : "")} ({l.Paths.Notice})", 3);
                         return;
                     }
-                    // Hold the start while the mix and the narration load.
+                    // Hold the start while the mix (or the loop) and the narration load.
                     if (d.ActivePlayer != null) d.ActivePlayer.Paused = true;
-                    if (d.CurrentMashup == null) Debug.LogWarning($"[record] '{path.Id}' has no playable mashup mix: it records the per-step previews, without narration.");
-                    else if (l.Narration.For(d.CurrentMashup.Id) == null) Debug.LogWarning($"[record] '{path.Id}' has no narration in {l.NarrationCatalog.SourcePath} ({l.NarrationCatalog.Status}): recording it unnarrated.");
+                    if (!duet && d.CurrentMashup == null) Debug.LogWarning($"[record] '{path.Id}' has no playable mashup mix: it records the per-step previews, without narration.");
+                    else if (!duet && l.Narration.For(d.CurrentMashup!.Id) == null) Debug.LogWarning($"[record] '{path.Id}' has no narration in {l.NarrationCatalog.SourcePath} ({l.NarrationCatalog.Status}): recording it unnarrated.");
                     phase = Phase.Loading;
                     deadline = now + 60;
                     return;
@@ -221,12 +258,14 @@ namespace MusicHistory.EditorTools
                     if (l == null) { Finish("the viewer went away", 5); return; }
                     WalkthroughDirector d = l.Director;
                     MashupPlayer? mix = d.MashupAudio;
-                    bool mixReady = d.CurrentMashup == null || mix == null || mix.CurrentAudio != null || !d.CurrentMashup.FileExists;
-                    bool narrationReady = l.Narration == null || l.Narration.AllLoaded(l.Narration.CurrentPath);
+                    bool mixReady = duet
+                        ? d.CurrentDuet == null || d.DuetAudio == null || d.DuetAudio.CurrentAudio != null || !d.CurrentDuet.FileExists
+                        : d.CurrentMashup == null || mix == null || mix.CurrentAudio != null || !d.CurrentMashup.FileExists;
+                    bool narrationReady = duet || l.Narration == null || l.Narration.AllLoaded(l.Narration.CurrentPath);
                     if (!(mixReady && narrationReady) && now < deadline) return;
                     if (!mixReady) Debug.LogWarning("[record] the mix is still loading after 60 s; recording anyway.");
                     if (!narrationReady) Debug.LogWarning("[record] some narration WAVs are still loading after 60 s; recording anyway.");
-                    output = OutputBase(path!.Id, vertical);
+                    output = OutputBase(path!.Id, vertical, duet);
                     Directory.CreateDirectory(Path.GetDirectoryName(output)!);
                     StartRecorder();
                     resizeFrames = 0;
@@ -243,11 +282,19 @@ namespace MusicHistory.EditorTools
                     WalkthroughDirector d = l.Director;
                     l.Layout!.ApplyNow();
                     d.GoTo(0);   // from the top: the mix seeks to 0 and plays
+                    if (duet && d.DuetAudio != null && d.CurrentDuet != null)
+                    {
+                        // The loop from its very start: one whole cycle, then the wrap and a few bars of the next.
+                        d.DuetAudio.Seek(0);
+                        duetStart = d.DuetAudio.TotalSeconds;
+                        duetLength = d.CurrentDuet.Duration + DuetTailBars * d.CurrentDuet.BarSeconds;
+                    }
                     if (d.ActivePlayer != null) d.ActivePlayer.Paused = false;
                     d.Reframe(immediate: true);
-                    double seconds = d.CurrentMashup != null ? d.CurrentMashup.Duration : path!.Seconds > 0 ? path.Seconds : 600;
+                    double seconds = duet && d.CurrentDuet != null ? duetLength
+                        : d.CurrentMashup != null ? d.CurrentMashup.Duration : path!.Seconds > 0 ? path.Seconds : 600;
                     recordDeadline = now + seconds * 3 + 120;
-                    Debug.Log($"[record] recording '{path!.Id}' ({(vertical ? "vertical" : "horizontal")} {width}x{height}, {Fps} fps) to {output}.mp4");
+                    Debug.Log($"[record] recording '{path!.Id}'{(duet ? " duet loop" : "")} ({(vertical ? "vertical" : "horizontal")} {width}x{height}, {Fps} fps) to {output}.mp4");
                     phase = Phase.Recording;
                     return;
                 }
@@ -261,7 +308,17 @@ namespace MusicHistory.EditorTools
                         return;
                     }
                     WalkthroughDirector d = l.Director;
-                    if (d.TourComplete || !d.IsTouring)
+                    if (duet && d.IsTouring && d.DuetAudio != null && d.CurrentDuet != null)
+                    {
+                        // A loop never completes: stop after one cycle and the first bars after the wrap.
+                        if (d.DuetAudio.TotalSeconds - duetStart >= duetLength)
+                        {
+                            tailEndFrame = Time.frameCount;
+                            phase = Phase.Tail;
+                            return;
+                        }
+                    }
+                    else if (d.TourComplete || !d.IsTouring)
                     {
                         tailEndFrame = Time.frameCount + Mathf.CeilToInt(TailSeconds * Fps);
                         phase = Phase.Tail;
@@ -280,7 +337,7 @@ namespace MusicHistory.EditorTools
         {
             RecorderControllerSettings settings = ScriptableObject.CreateInstance<RecorderControllerSettings>();
             MovieRecorderSettings movie = ScriptableObject.CreateInstance<MovieRecorderSettings>();
-            movie.name = "MusicHistory narrated path";
+            movie.name = duet ? "MusicHistory duet loop" : "MusicHistory narrated path";
             movie.Enabled = true;
             movie.EncoderSettings = new CoreEncoderSettings
             {
@@ -327,12 +384,15 @@ namespace MusicHistory.EditorTools
 
         // ------------------------------------------------------------------ helpers
 
-        /// <summary>&lt;data&gt;/recordings/&lt;path id&gt;_&lt;format&gt; (no extension: the Recorder adds .mp4).</summary>
-        public static string OutputBase(string pathId, bool portrait)
+        /// <summary>
+        /// &lt;data&gt;/recordings/&lt;path id&gt;_&lt;format&gt;, or &lt;path id&gt;_duet_&lt;format&gt; for a duet loop
+        /// (no extension: the Recorder adds .mp4).
+        /// </summary>
+        public static string OutputBase(string pathId, bool portrait, bool duetLoop = false)
         {
             char[] bad = Path.GetInvalidFileNameChars();
             string safe = new(pathId.Select(c => bad.Contains(c) || c == '<' || c == '>' ? '_' : c).ToArray());
-            return Path.Combine(PipelinePaths.Data(), "recordings", $"{safe}_{(portrait ? "vertical" : "horizontal")}");
+            return Path.Combine(PipelinePaths.Data(), "recordings", $"{safe}{(duetLoop ? "_duet" : "")}_{(portrait ? "vertical" : "horizontal")}");
         }
 
         static string? MenuPathId()
@@ -347,9 +407,10 @@ namespace MusicHistory.EditorTools
 
         /// <summary>
         /// <paramref name="id"/> exactly; else the path recorded last, else the first narrated path
-        /// with a mashup, else the first path with a mashup, else the first playable path.
+        /// with a mashup, else the first path with a mashup, else the first playable path. For a duet
+        /// loop (<paramref name="duetLoop"/>) only paths with one: the id, else the last, else the first.
         /// </summary>
-        static FeaturedPath? Choose(SongGraphLoader l, string? id, out string why)
+        static FeaturedPath? Choose(SongGraphLoader l, string? id, bool duetLoop, out string why)
         {
             IReadOnlyList<FeaturedPath> paths = l.Catalog.Paths;
             string ids = string.Join(", ", paths.Select(p => p.Id));
@@ -357,10 +418,18 @@ namespace MusicHistory.EditorTools
             {
                 FeaturedPath? exact = paths.FirstOrDefault(p => p.Id == id);
                 why = exact == null ? $"no featured path '{id}' in {l.Catalog.SourcePath} (paths: {ids})"
-                    : !exact.IsPlayable ? $"path '{id}' is not playable in this graph" : "";
-                return exact != null && exact.IsPlayable ? exact : null;
+                    : !exact.IsPlayable ? $"path '{id}' is not playable in this graph"
+                    : duetLoop && l.Director.DuetFor(exact) == null ? $"path '{id}' has no duet loop ({l.Duets.Status}; {l.Duets.SourcePath})" : "";
+                return why.Length == 0 ? exact : null;
             }
             string last = EditorPrefs.GetString(LastPathPref, "");
+            if (duetLoop)
+            {
+                FeaturedPath? withDuet = paths.FirstOrDefault(p => p.Id == last && l.Director.DuetFor(p) != null)
+                                         ?? paths.FirstOrDefault(p => l.Director.DuetFor(p) != null);
+                why = withDuet == null ? $"no featured path has a playable duet loop ({l.Duets.Status}; {l.Duets.SourcePath})" : "";
+                return withDuet;
+            }
             FeaturedPath? chosen = paths.FirstOrDefault(p => p.Id == last && p.IsPlayable)
                                    ?? paths.FirstOrDefault(p => p.IsPlayable && l.Director.MashupFor(p) is Mashup m && l.NarrationCatalog.For(m.Id) != null)
                                    ?? paths.FirstOrDefault(p => p.IsPlayable && l.Director.MashupFor(p) != null)

@@ -112,6 +112,61 @@ namespace MusicHistory.Viewer
             }
         }
 
+        /// <summary>
+        /// A ring segment (annular sector) around <paramref name="center"/> (reference px, y down)
+        /// between <paramref name="innerRadius"/> and <paramref name="outerRadius"/>, from
+        /// <paramref name="startDegrees"/> to <paramref name="endDegrees"/> measured clockwise from 12
+        /// o'clock. Every edge is feathered (<see cref="Feather"/> px): the rims across the radius and
+        /// the two ends along the angle.
+        /// </summary>
+        public void AddArc(Vector2 center, float innerRadius, float outerRadius, float startDegrees, float endDegrees, Color c)
+        {
+            float span = endDegrees - startDegrees;
+            if (span <= 0f || outerRadius <= innerRadius) return;
+            float feather = Mathf.Max(0f, Feather);
+            float mid = Mathf.Max(1f, (innerRadius + outerRadius) * .5f);
+            // The ends fade over one feather width along the arc.
+            float fade = Mathf.Min(span * .5f, feather / mid * Mathf.Rad2Deg);
+            int steps = Mathf.Max(2, Mathf.CeilToInt(span / 3f));
+            Color edge = new(c.r, c.g, c.b, 0f);
+            int first = vertices.Count;
+            int columns = 0;
+            void Column(float degrees, float alpha)
+            {
+                float rad = degrees * Mathf.Deg2Rad;
+                Vector2 dir = new(Mathf.Sin(rad), -Mathf.Cos(rad));   // clockwise from up, y down
+                Color core = new(c.r, c.g, c.b, c.a * alpha);
+                Vector2 o2 = center + dir * (outerRadius + feather), o1 = center + dir * outerRadius;
+                Vector2 i1 = center + dir * innerRadius, i2 = center + dir * Mathf.Max(0f, innerRadius - feather);
+                Vertex(o2.x, o2.y, edge);
+                Vertex(o1.x, o1.y, core);
+                Vertex(i1.x, i1.y, core);
+                Vertex(i2.x, i2.y, edge);
+                columns++;
+            }
+            if (fade > 0f) Column(startDegrees, 0f);
+            for (int k = 0; k <= steps; k++)
+            {
+                float u = k / (float)steps;
+                float a = Mathf.Lerp(startDegrees + fade, endDegrees - fade, u);
+                Column(a, 1f);
+            }
+            if (fade > 0f) Column(endDegrees, 0f);
+            for (int k = 0; k + 1 < columns; k++)
+            {
+                int a = first + k * 4, b = a + 4;
+                for (int s = 0; s < 3; s++)
+                {
+                    indices.Add(a + s);
+                    indices.Add(b + s);
+                    indices.Add(b + s + 1);
+                    indices.Add(b + s + 1);
+                    indices.Add(a + s + 1);
+                    indices.Add(a + s);
+                }
+            }
+        }
+
         void Vertex(float x, float y, Color c)
         {
             UIVertex v = UIVertex.simpleVert;

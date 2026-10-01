@@ -248,8 +248,8 @@ namespace MusicHistory.EditorTools
                 loader.Nodes.Where(x => x != focus && !related.Contains(x)).All(x => x.State == BubbleState.Dimmed));
             report.Check("hover: the song's secondary edges appear", loader.Edges
                 .Where(e => !e.IsTree).All(e => e.Shown == (e.Source == focus || e.Target == focus)));
-            report.Check("hover: HUD shows title, key, BPM and lineage", loader.Hud.InfoText.Contains(focus.Song.Title) &&
-                loader.Hud.InfoText.Contains("Key") && loader.Hud.InfoText.Contains("BPM") && loader.Hud.InfoText.Contains("Lineage"));
+            // The simplified song card (title, artist · year, key · BPM, the chord ring); the lineage moved to the edge card.
+            CheckSongCard(report, loader, focus, "hover");
             CheckHudSemantics(report, loader, focus, "hover");
             // Frame the focus with its neighbourhood for the screenshot.
             List<(Vector3, float)> items = new() { (focus.transform.position, focus.Radius) };
@@ -486,6 +486,30 @@ namespace MusicHistory.EditorTools
                  l.ScreenRect.xMax > captureWidth || l.ScreenRect.yMax > captureHeight));
             report.Check($"{view}: no drawn label under a HUD panel or cut by the screen edge", hidden == 0 && panels.Count > 0,
                 $"{panels.Count} panels, {hidden} labels under a panel or off screen");
+        }
+
+        /// <summary>
+        /// The song card at the top right: title, artist · year, key · BPM, and the song's main loop as a
+        /// chord ring (one arc per chord in the chord palette, roman numerals, the start at 12 o'clock,
+        /// no hand while nothing plays); none of the old lineage / identity / canon text.
+        /// </summary>
+        static void CheckSongCard(Report report, SongGraphLoader loader, SongNode node, string view)
+        {
+            GraphHud hud = loader.Hud;
+            string info = hud.InfoText;
+            List<RingChord> loop = MainLoop.Parse(node.Song.MainLoop);
+            ChordRingView ring = hud.Ring;
+            bool text = hud.SongCardVisible && hud.CardSong == node && info.Contains(node.Song.Title) && info.Contains(node.Song.KeyName) &&
+                        info.Contains("BPM") && info.Contains(node.Song.Year.ToString(CultureInfo.InvariantCulture)) &&
+                        !info.Contains("Lineage") && !info.Contains("Main loop") && !info.Contains("canon rank") && !info.Contains("bits") && !info.Contains("Shares:");
+            double gaps = loop.Count > 1 ? loop.Count * ChordRingView.GapDegrees : 0;
+            bool ringOk = loop.Count == 0
+                ? !ring.Visible
+                : ring.Visible && ring.Chords.Count == loop.Count && ring.StartMarked && float.IsNaN(ring.PointerDegrees) &&
+                  ring.Chords.Select((c, i) => c.Roman == loop[i].Roman && c.Color == ChordPalette.Of(loop[i].RootPc, loop[i].Minor)).All(ok => ok) &&
+                  ring.Arcs.All(x => x.end > x.start) && Math.Abs(ring.Arcs.Sum(x => x.end - x.start) + gaps - 360) < .5;
+            report.Check($"{view}: the song card shows title, artist · year, key · BPM and the main loop as a chord ring (one arc per chord in the chord palette, the start at 12 o'clock); no lineage text",
+                text && ringOk, $"'{node.Song.MainLoop ?? "(no loop)"}' → {ring.RomanText}; {FirstLines(info, 4)}");
         }
 
         static void TickDirector(WalkthroughDirector director, float dt)

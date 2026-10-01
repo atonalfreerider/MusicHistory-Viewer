@@ -24,23 +24,35 @@ namespace MusicHistory.EditorTools
     /// </summary>
     public static partial class Validation
     {
-        /// <summary>The HUD says what an edge is: bits and z for strict evidence, "Shares: …" for identity lineages.</summary>
+        /// <summary>
+        /// The HUD says what an edge is: bits and z for strict evidence, "Shares: …" for identity
+        /// lineages — on the edge card (the song card is simplified to title, key · BPM and the chord
+        /// ring, so the focus's tree edge is read from its edge card, then the song card comes back).
+        /// </summary>
         static void CheckHudSemantics(Report report, SongGraphLoader loader, SongNode focus, string view)
         {
             SongGraphData data = loader.Data!;
-            string info = loader.Hud.InfoText;
+            string card = loader.Hud.InfoText;
+            bool simple = loader.Hud.SongCardVisible && !card.Contains("bits") && !card.Contains("Shares:");
+            string info = card;
+            if (focus.TreeEdge != null)
+            {
+                loader.Hud.ShowEdge(focus.TreeEdge);
+                info = loader.Hud.InfoText;
+                loader.Hud.ShowSong(focus);
+            }
             string legend = loader.Hud.LegendText;
             if (data.IsIdentityLineage)
             {
-                report.Check($"{view} (identity lineage): HUD says 'Shares:' and never 'bits'",
-                    focus.TreeEdge == null ? !info.Contains("bits") : info.Contains("Shares:") && !info.Contains("bits"), FirstLines(info, 9));
+                report.Check($"{view} (identity lineage): the song card has no bits; its tree edge's card says 'Shares:' and never 'bits'",
+                    simple && (focus.TreeEdge == null || info.Contains("Shares:") && !info.Contains("bits")), FirstLines(info, 9));
                 report.Check($"{view} (identity lineage): legend explains shared identities, not proven copying",
                     legend.Contains("share a musical identity") && legend.Contains("not proven copying") && legend.Contains("strong match") && !legend.Contains("influencer"));
             }
             else
             {
-                report.Check($"{view} (strict evidence): HUD shows the tree edge's bits and z, no 'Shares:'",
-                    focus.TreeEdge != null && info.Contains(" bits · z ") && !info.Contains("Shares:"), FirstLines(info, 9));
+                report.Check($"{view} (strict evidence): the tree edge's card shows its bits and z, no 'Shares:' (the song card neither)",
+                    simple && focus.TreeEdge != null && info.Contains(" bits · z ") && !info.Contains("Shares:"), FirstLines(info, 9));
                 report.Check($"{view} (strict evidence): legend keeps the influence wording",
                     legend.Contains(" influences (") && legend.Contains("wide end = influencer") && !legend.Contains("not proven copying"));
             }
@@ -238,8 +250,12 @@ namespace MusicHistory.EditorTools
             SongNode family = loader.Nodes.First(n => n.TreeEdge != null && !n.TreeEdge.Record.IsStrongMatch);
             IdentityFamily f = data.Family(family.TreeEdge!.Record.FamilyId)!;
             loader.Highlighter.ApplyFocus(family, force: true);
+            CheckSongCard(report, loader, family, "lineage hover");
+            // The identity moved from the song card to the edge card of the song's tree edge.
+            loader.Hud.ShowEdge(family.TreeEdge!);
             string info = loader.Hud.InfoText;
-            report.Check("lineage hover: 'Shares: <identity>' with the family size, no bits",
+            loader.Hud.ShowSong(family);
+            report.Check("lineage hover: the song's tree edge card says 'Shares: <identity>' with the family size, no bits",
                 info.Contains("Shares:") && info.Contains(GraphHud.Esc(f.Label)) && info.Contains($"family of {f.Members.Count} songs") &&
                 !info.Contains("bits") && !info.Contains("Influenced by"), FirstLines(info, 9));
             CheckHudSemantics(report, loader, family, "lineage hover");
@@ -247,17 +263,19 @@ namespace MusicHistory.EditorTools
             SongNode strong = loader.Nodes.First(n => n.TreeEdge != null && n.TreeEdge.Record.IsStrongMatch);
             EdgeRecord se = strong.TreeEdge!.Record;
             loader.Highlighter.ApplyFocus(strong, force: true);
+            loader.Hud.ShowEdge(strong.TreeEdge!);
             info = loader.Hud.InfoText;
+            loader.Hud.ShowSong(strong);
             string z = $"strong match</b> (z {se.Z.ToString("0.0", CultureInfo.InvariantCulture)})";
-            report.Check("lineage hover on a strong match: 'strong match (z …)', no bits", info.Contains("Shares:") && info.Contains(z) &&
+            report.Check("lineage hover on a strong match: its tree edge card says 'strong match (z …)', no bits", info.Contains("Shares:") && info.Contains(z) &&
                 info.Contains(GraphHud.Esc(data.Family(se.FamilyId)!.Label)) && !info.Contains("bits"), $"node {strong.NodeId}: {FirstLines(info, 9)}");
 
             SongNode? root = loader.Nodes.FirstOrDefault(n => n.TreeEdge == null && data.FamiliesOf(n.NodeId).Any(m => data.Families[m.FamilyId].Size >= 2));
             if (root != null)
             {
                 loader.Highlighter.ApplyFocus(root, force: true);
-                report.Check("lineage hover on a root: says it roots a lineage tree, no bits",
-                    loader.Hud.InfoText.Contains("Root of its lineage tree") && !loader.Hud.InfoText.Contains("bits"));
+                // A root has no tree edge: its card is the simplified song card (no lineage text, no bits).
+                CheckSongCard(report, loader, root, "lineage hover on a root");
             }
             loader.Highlighter.ApplyFocus(null, force: true);
 

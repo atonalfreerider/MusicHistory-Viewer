@@ -115,6 +115,28 @@ namespace MusicHistory.EditorTools
         const string FullMashupKey = "MusicHistory.PathsPlayMode.FullMashup";
         static string FullMashupId => SessionState.GetString(FullMashupKey, "");
 
+        /// <summary>
+        /// Plays one duet loop in real time on the audio device, round its loop point (DESIGN.md §16):
+        /// <c>-executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullDuet [-duetPlayId &lt;path id&gt;] [-validationDuets &lt;file&gt;]</c>
+        /// (default: the playable loop with the most songs whose loop.mp3 exists; catalog:
+        /// -validationDuets, else the real duets.json). The listener is muted. Checks the loop
+        /// decodes to its contract length (trimmed of MP3 padding), plays on the audio clock, wraps
+        /// once per pass with the display clock continuous through the wrap, runs at real time, and
+        /// writes data/screens/duet_fullplay.json.
+        /// </summary>
+        public static void RunFullDuet()
+        {
+            string id = "*";
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (string.Equals(args[i], "-duetPlayId", StringComparison.OrdinalIgnoreCase)) id = args[i + 1];
+            SessionState.SetString(FullDuetKey, id);
+            Run();
+        }
+
+        const string FullDuetKey = "MusicHistory.PathsPlayMode.FullDuet";
+        static string FullDuetId => SessionState.GetString(FullDuetKey, "");
+
         static void Hook()
         {
             EditorApplication.update -= Tick;
@@ -145,6 +167,7 @@ namespace MusicHistory.EditorTools
                 SessionState.SetBool(ActiveKey, false);
                 SessionState.EraseString(FullPathKey);
                 SessionState.EraseString(FullMashupKey);
+                SessionState.EraseString(FullDuetKey);
                 EditorApplication.update -= Tick;
                 Application.logMessageReceivedThreaded -= OnLog;
                 EditorApplication.Exit(exitCode);
@@ -238,6 +261,12 @@ namespace MusicHistory.EditorTools
             {
                 yield return FullMashup(loader!, FullMashupId);
                 Check("full mashup: no exception or error logged", ErrorCount() == before, Errors(before));
+                yield break;
+            }
+            if (FullDuetId.Length > 0)
+            {
+                yield return FullDuet(loader!, FullDuetId);
+                Check("full duet: no exception or error logged", ErrorCount() == before, Errors(before));
                 yield break;
             }
             yield return Paths(loader!);
@@ -916,6 +945,119 @@ namespace MusicHistory.EditorTools
             yield return Frames(2);
         }
 
+        // ------------------------------------------------------------------ one duet loop, real time, round the loop point
+
+        static IEnumerator FullDuet(SongGraphLoader loader, string id)
+        {
+            FeaturedPathsPanel panel = loader.Paths!;
+            WalkthroughDirector d = loader.Director;
+            DuetPlayer player = d.DuetAudio!;
+            string? arg = null;
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (string.Equals(args[i], "-validationDuets", StringComparison.OrdinalIgnoreCase)) arg = SongGraphLoader.ResolveUserPath(args[i + 1]);
+            string real = DuetCatalog.DefaultPath();
+            DuetCatalog catalog = arg != null && File.Exists(arg) ? DuetCatalog.Load(arg)
+                : File.Exists(real) ? DuetCatalog.Load(real) : DuetCatalog.Empty("no duets.json");
+            loader.UseDuets(catalog, "full duet");
+            DuetLoop? found = id == "*"
+                ? catalog.Loops.Where(x => x.IsPlayable && x.FileExists).OrderByDescending(x => x.Songs.Count).ThenBy(x => x.Seconds).FirstOrDefault()
+                : catalog.Find(id);
+            if (!Check($"full duet: '{id}' is in duets.json, playable, its loop.mp3 exists",
+                    found != null && found.IsPlayable && found.FileExists && found.Path != null,
+                    $"{catalog.Status}; {string.Join(", ", catalog.Loops.Select(x => $"{x.Id}{(x.IsPlayable ? "" : " (" + DuetCatalog.WhyNotPlayable(x) + ")")}"))}"))
+                yield break;
+            DuetLoop l = found!;
+            float listener = AudioListener.volume;
+            AudioListener.volume = 0f;   // silent on this machine's speakers; the loop plays at full level
+            float volume = player.Volume;
+            player.Volume = 1f;
+            Stopwatch wall = Stopwatch.StartNew();
+            double Now() => wall.Elapsed.TotalSeconds;
+            int wraps = 0;
+            void OnWrap(int c) => wraps++;
+            player.Wrapped += OnWrap;
+            double worstBack = 0, worstJump = 0, prevTotal = -1, audioT0 = -1, wallT0 = 0, audioT1 = -1, wallT1 = 0, wrapWall = -1;
+            string clockSeen = "";
+            int segmentsSeen = 0, lastSegment = -1;
+            List<string> wrapLog = new();
+            try
+            {
+                panel.HandleKey(Key.P);
+                yield return Frames(2);
+                panel.Select(panel.Paths.ToList().IndexOf(l.Path!));
+                yield return Frames(2);
+                panel.HandleKey(Key.K);
+                yield return Seconds(30, () => player.CurrentAudio != null);
+                AudioClip? audio = player.CurrentAudio;
+                Check("full duet: the loop decodes to PCM as long as duets.json says (any MP3 padding trimmed), on a looping AudioSource",
+                    audio != null && Math.Abs(audio.length - l.Seconds) < .02 && player.CurrentSource != null && player.CurrentSource.loop,
+                    audio != null ? $"{audio.frequency} Hz, {audio.length:0.0000} s vs {l.Seconds:0.0000} s; trimmed {player.TrimmedLead} + {player.TrimmedTail} samples" : $"{player.ClockSource}; {player.LastWarning}");
+                // From near the loop's end, so the wrap comes soon; then once round the whole loop.
+                player.Seek(Math.Max(0, l.Duration - 6));
+                yield return Seconds(.5);
+                wall.Restart();
+                double budget = l.Duration + 12;
+                while (Now() < budget && wraps < 2)
+                {
+                    double total = player.TotalSeconds;
+                    if (prevTotal >= 0)
+                    {
+                        double step = total - prevTotal;
+                        if (step < 0) worstBack = Math.Max(worstBack, -step);
+                        worstJump = Math.Max(worstJump, step - Time.unscaledDeltaTime);
+                    }
+                    if (wraps >= 1 && wrapWall < 0)
+                    {
+                        wrapWall = Now();
+                        wrapLog.Add($"wrapped at wall {wrapWall:0.000} s, total {total:0.000} s, loop {player.CurrentSeconds:0.000} s, audio {player.AudioTotalSeconds:0.000} s");
+                    }
+                    prevTotal = total;
+                    if (player.ClockSource == "audio")
+                    {
+                        clockSeen = clockSeen.Length == 0 ? "audio" : clockSeen;
+                        if (audioT0 < 0)
+                        {
+                            audioT0 = total;
+                            wallT0 = Now();
+                        }
+                        audioT1 = total;
+                        wallT1 = Now();
+                    }
+                    else clockSeen = player.ClockSource;
+                    if (d.DuetSegmentIndex != lastSegment)
+                    {
+                        lastSegment = d.DuetSegmentIndex;
+                        segmentsSeen++;
+                    }
+                    yield return null;
+                }
+            }
+            finally
+            {
+                player.Wrapped -= OnWrap;
+                AudioListener.volume = listener;
+                player.Volume = volume;
+            }
+            double rate = audioT1 > audioT0 && wallT1 > wallT0 ? (audioT1 - audioT0) / (wallT1 - wallT0) : 0;
+            timingJson.Clear();
+            timingJson.Add($"{{\"id\": \"{Esc(l.Id)}\", \"seconds\": {F(l.Seconds)}, \"decoded_s\": {F(player.CurrentAudio != null ? player.CurrentAudio.length : -1)}, " +
+                           $"\"trimmed_lead_samples\": {player.TrimmedLead}, \"trimmed_tail_samples\": {player.TrimmedTail}, \"wraps\": {wraps}, \"clock\": \"{Esc(clockSeen)}\", " +
+                           $"\"audio_wall_rate\": {F(rate, "0.0000")}, \"worst_backward_s\": {F(worstBack)}, \"worst_jump_s\": {F(worstJump)}, \"segments_seen\": {segmentsSeen}}}");
+            foreach (string line in wrapLog) Debug.Log("[duet-full] " + line);
+            Debug.Log($"[duet-full] {l.Id}: {l.Seconds:0.000} s loop; {wraps} wraps; clock {clockSeen}; audio/wall rate {rate:0.0000}; worst backward step {worstBack * 1000:0.0} ms, worst jump {worstJump * 1000:0.0} ms");
+            Check($"full duet '{l.Id}': the loop plays on the audio clock and wraps (twice: from near its end, then round the whole loop)", clockSeen == "audio" && wraps == 2,
+                $"{clockSeen}; {wraps} wraps");
+            Check($"full duet '{l.Id}': the display clock is continuous through the loop point (never back, no jump over 50 ms)", worstBack < 1e-6 && worstJump < .05,
+                $"back {worstBack * 1000:0.0} ms, jump {worstJump * 1000:0.0} ms");
+            Check($"full duet '{l.Id}': the audio clock runs at real time (within 1%)", Math.Abs(rate - 1) < .01, rate.ToString("0.0000", CultureInfo.InvariantCulture));
+            Check($"full duet '{l.Id}': the pairs follow the loop (every segment entered on the way round)", segmentsSeen >= l.Segments.Count, $"{segmentsSeen} segment changes for {l.Segments.Count} segments");
+            panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+            if (panel.IsOpen) panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+        }
+
         static string F(double v, string format = "0.000") =>
             double.IsNaN(v) || double.IsInfinity(v) ? "null" : v.ToString(format, CultureInfo.InvariantCulture);
 
@@ -1059,11 +1201,12 @@ namespace MusicHistory.EditorTools
                 json.Append(string.Join(",", checks.Select(c =>
                     $"\n    {{\"name\": \"{Esc(c.name)}\", \"ok\": {(c.ok ? "true" : "false")}, \"detail\": \"{Esc(c.detail)}\"}}")));
                 json.Append("\n  ]");
-                bool full = FullPathId.Length > 0, fullMix = !full && FullMashupId.Length > 0;
+                bool full = FullPathId.Length > 0, fullMix = !full && FullMashupId.Length > 0, fullDuet = !full && !fullMix && FullDuetId.Length > 0;
                 if (full) json.Append(",\n  \"steps\": [").Append(string.Join(",", timingJson.Select(t => "\n    " + t))).Append("\n  ]");
                 if (fullMix) json.Append(",\n  \"segments\": [").Append(string.Join(",", timingJson.Select(t => "\n    " + t))).Append("\n  ]");
+                if (fullDuet) json.Append(",\n  \"loop\": [").Append(string.Join(",", timingJson.Select(t => "\n    " + t))).Append("\n  ]");
                 json.Append("\n}\n");
-                string name = full ? "paths_fullplay.json" : fullMix ? "mashup_fullplay.json" : "paths_playmode.json";
+                string name = full ? "paths_fullplay.json" : fullMix ? "mashup_fullplay.json" : fullDuet ? "duet_fullplay.json" : "paths_playmode.json";
                 File.WriteAllText(Path.Combine(dir, name), json.ToString(), new UTF8Encoding(false));
             }
             catch (Exception e)

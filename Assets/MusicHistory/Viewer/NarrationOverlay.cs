@@ -8,8 +8,9 @@ using UnityEngine.UI;
 namespace MusicHistory.Viewer
 {
     /// <summary>
-    /// The narration on screen while a narrated path plays (DESIGN.md §15): the spoken line as a
-    /// clean subtitle (our own narration, never lyrics) and a photo popup card for the cue's
+    /// The narration on screen while a narrated path plays (DESIGN.md §15; captions only, there is no
+    /// voiceover): the line as a clean subtitle (our own narration, never lyrics), held for its
+    /// reading time (<see cref="NarrationPlayer.CaptionCue"/>), and a photo popup card for the cue's
     /// artist image — the photo, whom it shows and, always, the credit line
     /// "Photo: &lt;author&gt;, &lt;license&gt; (Wikimedia Commons)" under it. Both fade and slide in
     /// and out. Placement comes from <see cref="ViewerLayout.Compute"/>: horizontal, the caption sits
@@ -25,7 +26,7 @@ namespace MusicHistory.Viewer
         [Min(.01f)] public float CaptionFadeOut = .18f;
         [Min(.01f)] public float CardFadeIn = .38f;
         [Min(.01f)] public float CardFadeOut = .26f;
-        [Tooltip("How long the 'Narration on/off' notice shows after N.")]
+        [Tooltip("How long the 'Captions on/off' notice shows after N.")]
         [Min(0f)] public float ToastSeconds = 1.5f;
 
         static readonly Color CaptionBack = new(.02f, .024f, .03f, .86f);
@@ -162,7 +163,7 @@ namespace MusicHistory.Viewer
         void OnToggled(bool on)
         {
             if (root == null) return;
-            toastText.text = on ? "NARRATION ON  ·  N" : "NARRATION OFF  ·  N";
+            toastText.text = on ? "CAPTIONS ON  ·  N" : "CAPTIONS OFF  ·  N";
             toastLeft = ToastSeconds;
         }
 
@@ -208,7 +209,8 @@ namespace MusicHistory.Viewer
             float infoH = loader.Hud.InfoVisible ? loader.Hud.InfoRect.sizeDelta.y : 0f;
             bool melody = loader.MelodyGraph != null && loader.MelodyGraph.Showing;
             bool photoNow = image != null || (shownImage != null && cardV > 0f);
-            LayoutFrame frame = ViewerLayout.Compute(Screen.width, Screen.height, melody, photoNow, path != null, legendH, infoH,
+            Vector2Int screen = ViewerLayout.CurrentScreen();
+            LayoutFrame frame = ViewerLayout.Compute(screen.x, screen.y, melody, photoNow, path != null, legendH, infoH,
                 ViewerLayout.DefaultTourView, ViewerLayout.DefaultMashupView);
             Frame = frame;
 
@@ -262,7 +264,7 @@ namespace MusicHistory.Viewer
                 card.localScale = new Vector3(s, s, 1f);
             }
 
-            // "Narration on / off" after N, above the caption's place.
+            // "Captions on / off" after N, above the caption's place.
             toastLeft = Mathf.Max(0f, toastLeft - dt);
             toastV = Mathf.MoveTowards(toastV, toastLeft > 0f && pathPlaying ? 1f : 0f, dt / .15f);
             UiKit.Show(toast, toastV > 0f);
@@ -285,11 +287,13 @@ namespace MusicHistory.Viewer
             string text = GraphHud.Esc(shownLine);
             captionText.text = text;
             float size = frame.CaptionFont;
+            // The caption fits its slot: at most maxLines, and never taller than the slot.
+            float room = frame.CaptionSlot.height - 2 * padY;
             for (; ; size -= 1f)
             {
                 captionText.fontSize = size;
                 float h = captionText.GetPreferredValues(text, maxW - 2 * padX, 0f).y;
-                if (h <= maxLines * size * 1.34f + 1f || size <= frame.CaptionMinFont) break;
+                if ((h <= maxLines * size * 1.34f + 1f && h <= room + 1f) || size <= frame.CaptionMinFont) break;
             }
             float single = captionText.GetPreferredValues(text, 100000f, 0f).x;
             float w = Mathf.Min(maxW, single + 2 * padX + 2f);

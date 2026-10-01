@@ -30,11 +30,17 @@ namespace MusicHistory.Viewer
         [NonSerialized] public WorldLabel? Label;
 
         MeshRenderer bubbleRenderer = null!;
+        MeshRenderer? photoRenderer;
+        string photoId = "";
         BubbleState state = BubbleState.Normal;
         bool labelRequested;
 
         public BubbleState State => state;
         public MeshRenderer BubbleRenderer => bubbleRenderer;
+        /// <summary>The artist photo on the bubble (<see cref="BubblePhotos"/>; null when the song has none).</summary>
+        public MeshRenderer? PhotoRenderer => photoRenderer;
+        /// <summary>The photo's image id ("artist-&lt;QID&gt;"; empty when none).</summary>
+        public string PhotoId => photoId;
         public int NodeId => Song.NodeId;
         public string LabelText => $"<b><noparse>{Song.Title}</noparse></b>\n<size=78%><color=#c3c8d0><noparse>{Song.Artist}</noparse> · {Song.Year}</color></size>" +
                                    (Song.IsValidationExtra ? "\n<size=64%><color=#ffcf4a><i>validation control, outside the ranked list</i></color></size>" : "");
@@ -67,7 +73,7 @@ namespace MusicHistory.Viewer
         }
 
         /// <summary>Unit quad in the XY plane; bounds are a cube so camera-facing discs are never culled early.</summary>
-        static Mesh QuadMesh()
+        public static Mesh QuadMesh()
         {
             if (quadMesh != null) return quadMesh;
             quadMesh = new Mesh
@@ -92,6 +98,22 @@ namespace MusicHistory.Viewer
             state = newState;
             // Teardown: the bubble may already be destroyed (no fixed destruction order).
             if (bubbleRenderer != null) bubbleRenderer.sharedMaterial = GraphMaterials.Bubble(KeyColor, DecadeColor, newState);
+            if (photoRenderer != null) photoRenderer.sharedMaterial = BubblePhotos.MaterialFor(photoId, newState);
+        }
+
+        /// <summary>Puts photo <paramref name="id"/>'s renderer on this bubble (its material follows the bubble's state).</summary>
+        public void AttachPhoto(MeshRenderer renderer, string id)
+        {
+            photoRenderer = renderer;
+            photoId = id;
+            renderer.sharedMaterial = BubblePhotos.MaterialFor(id, state);
+        }
+
+        /// <summary>Removes the photo (its object is destroyed by the caller).</summary>
+        public void DetachPhoto()
+        {
+            photoRenderer = null;
+            photoId = "";
         }
 
         /// <summary>Called when the live simulation moved this node.</summary>

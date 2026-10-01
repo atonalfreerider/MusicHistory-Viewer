@@ -33,6 +33,13 @@ namespace MusicHistory.Viewer
     /// and BPM heard and the chord match; the instrumental's chip is lit, the vocal's chip marked;
     /// the time bar covers the whole mix with its changeovers marked; the melody graph
     /// (<see cref="MelodyGraphPanel"/>) sits above the strip, toggled by M or the Melody button.
+    ///
+    /// A path with a duet loop (DESIGN.md §16) offers it next to its narrated mix: a "Duet" button on
+    /// its row and in the list's footer, and K (in the list: play the selected path's duet loop;
+    /// while a path plays: switch between its duet loop and its narrated mix, also the strip's
+    /// Duet / Mix button). The strip then reads "Duet: A + B over &lt;root&gt;", the key, BPM, chord
+    /// match and "LOOP n" with the position in the loop; both singers' chips are marked VOCAL, the
+    /// root's BED and, during a handoff, the borrowed instrumental's.
     /// </summary>
     public sealed class FeaturedPathsPanel : MonoBehaviour
     {
@@ -45,6 +52,9 @@ namespace MusicHistory.Viewer
         const float RowHeight = 86f;
         const float RowGap = 4f;
         const float FooterHeight = 60f;
+        /// <summary>The footer's extra row (key hints above the buttons) when any path has a duet loop.</summary>
+        const float DuetFooterRow = 32f;
+        float Footer => FooterHeight + (anyDuets ? DuetFooterRow : 0f);
         public const float StripWidth = 1240f;
         public const float StripHeight = 206f;
         const float Pad = 20f;
@@ -114,6 +124,9 @@ namespace MusicHistory.Viewer
         TextMeshProUGUI footerHint = null!;
         Button playButton = null!;
         Image playBack = null!;
+        Button duetPlayButton = null!;
+        Image duetPlayBack = null!;
+        bool anyDuets;
         TextMeshProUGUI emptyText = null!;
         int firstRow;
         int visibleRows;
@@ -130,8 +143,9 @@ namespace MusicHistory.Viewer
         readonly List<TextMeshProUGUI> chipArrows = new();
         Image progressTrack = null!, progressFill = null!, glideMark = null!;
         Button prevButton = null!, pauseButton = null!, nextButton = null!, stopButton = null!, melodyButton = null!;
-        TextMeshProUGUI pauseLabel = null!, melodyLabel = null!;
-        Image melodyBack = null!;
+        TextMeshProUGUI pauseLabel = null!, melodyLabel = null!, variantLabel = null!;
+        Image melodyBack = null!, variantBack = null!;
+        Button variantButton = null!;
         readonly List<Image> segmentMarks = new();
 
         // Camera pose the list set when it opened (restored to the full overview on close if untouched).
@@ -193,8 +207,12 @@ namespace MusicHistory.Viewer
         public Button? NextButton => nextButton;
         public Button? PrevButton => prevButton;
         public Button? PauseButton => pauseButton;
-        /// <summary>Shows or hides the melody graph while a mashup plays (M).</summary>
+        /// <summary>Shows or hides the melody graph while a mashup or a duet loop plays (M).</summary>
         public Button? MelodyButton => melodyButton;
+        /// <summary>The list footer's "Duet loop" button: plays the selected path's duet loop (K).</summary>
+        public Button? DuetPlayButton => duetPlayButton;
+        /// <summary>The strip's Duet / Mix button: switches the playing path's variant (K).</summary>
+        public Button? VariantButton => variantButton;
         /// <summary>The row objects (index = row slot; <see cref="RowView.PathIndex"/> is the path).</summary>
         public IReadOnlyList<RowView> Rows => rows;
         public IReadOnlyList<ChipView> Chips => chips;
@@ -221,6 +239,7 @@ namespace MusicHistory.Viewer
             State = PanelState.Closed;
             Hovered = -1;
             Selected = paths.Count > 0 ? Math.Max(0, paths.FindIndex(p => p.IsPlayable)) : -1;
+            anyDuets = paths.Exists(p => owner.Director.DuetFor(p) != null);
             firstRow = 0;
             maxDetailHeight = -1f;
             Notice = "";
@@ -392,6 +411,13 @@ namespace MusicHistory.Viewer
                 Deselect();
                 PlaySelected();
             });
+            duetPlayButton = MakeButton(list, "Duet Loop", "►  Duet loop   K", 16, new Color(1, 1, 1, .1f), TextColor, out duetPlayBack);
+            duetPlayButton.onClick.AddListener(() =>
+            {
+                Deselect();
+                PlaySelectedDuet();
+            });
+            UiKit.Show(duetPlayButton, anyDuets);
         }
 
         RowView MakeRow(int pathIndex)
@@ -420,6 +446,9 @@ namespace MusicHistory.Viewer
             row.BadgeText.text = pathIndex < 9 ? (pathIndex + 1).ToString(CultureInfo.InvariantCulture) : "·";
 
             float left = 54f, right = 104f, duration = 64f;
+            // A path with a duet loop: a Duet button bottom right, the era and the mini timeline make room.
+            bool duet = loader.Director != null && loader.Director.DuetFor(p) != null;
+            float duetRoom = duet ? 84f : 0f;
             // The title line only shares its width with the duration ("2:29").
             row.TitleWidth = w - left - 14 - duration - 10;
             row.Title = UiKit.Text("Title", r, TitleSize, TextColor, TextAlignmentOptions.MidlineLeft, bold: true);
@@ -431,11 +460,26 @@ namespace MusicHistory.Viewer
             row.Count = UiKit.Text("Count", r, 14, MutedColor, TextAlignmentOptions.MidlineRight);
             UiKit.Place(row.Count.rectTransform, w - right, 39, right - 14, 20);
             row.Era = UiKit.Text("Era", r, 14, MutedColor, TextAlignmentOptions.MidlineRight);
-            UiKit.Place(row.Era.rectTransform, w - right - 10, 60, right - 4, 20);
+            UiKit.Place(row.Era.rectTransform, w - right - 10 - duetRoom, 60, right - 4, 20);
+            if (duet)
+            {
+                Button b = MakeButton(r, "Duet", "DUET", 12, new Color(1, 1, 1, .1f), TextColor, out _);
+                UiKit.Place((RectTransform)b.transform, w - 14 - 74, 57, 74, 22);
+                TextMeshProUGUI label = b.GetComponentInChildren<TextMeshProUGUI>();
+                label.characterSpacing = 4;
+                int index = pathIndex;
+                b.onClick.AddListener(() =>
+                {
+                    Deselect();
+                    Select(index);
+                    PlaySelectedDuet();
+                });
+                row.DuetButton = b;
+            }
 
             // Mini timeline: decade ticks, the path's span and one dot per song at its year.
             row.Strip = UiKit.Rect("Strip", r);
-            float stripWidth = w - left - right - 8;
+            float stripWidth = w - left - right - 8 - duetRoom;
             UiKit.Place(row.Strip, left, 64, stripWidth, 14);
             row.StripWidth = stripWidth;
             row.Track = UiKit.Image("Track", row.Strip, new Color(1, 1, 1, .12f));
@@ -462,7 +506,8 @@ namespace MusicHistory.Viewer
             row.Era.text = p.FirstYear > 0 ? (p.FirstYear == p.LastYear ? $"{p.FirstYear}" : $"{p.FirstYear}–{p.LastYear}") : "";
             string subtitle = p.Subtitle.Length > 0 ? p.Subtitle.Replace("->", "→") : $"{p.FirstYear} → {p.LastYear} · {p.Steps.Count} songs";
             if (!p.IsPlayable) subtitle = "not in this graph · " + subtitle;
-            else if (mix != null) subtitle = "mashup mix · " + subtitle;
+            else if (mix != null) subtitle = (duet ? "mashup mix + duet loop · " : "mashup mix · ") + subtitle;
+            else if (duet) subtitle = "duet loop · " + subtitle;
             else if (p.MissingRenders > 0) subtitle = $"{p.MissingRenders} render{(p.MissingRenders == 1 ? "" : "s")} missing (MIDI instead) · " + subtitle;
             row.Subtitle.text = GraphHud.Esc(subtitle);
             // paths.json subtitles read "1997 -> 2019 · 3 songs · …": the count column would repeat
@@ -591,13 +636,23 @@ namespace MusicHistory.Viewer
                 ToggleMelody();
             });
             UiKit.Show(melodyButton, false);
+            // Paths with a duet loop: switch between it and the narrated mix, left of Melody.
+            variantButton = MakeButton(strip, "Variant", "Duet  K", 15, new Color(1, 1, 1, .08f), TextColor, out variantBack);
+            UiKit.Place((RectTransform)variantButton.transform, bx - 256, 162, 120, 32);
+            variantLabel = variantButton.GetComponentInChildren<TextMeshProUGUI>();
+            variantButton.onClick.AddListener(() =>
+            {
+                Deselect();
+                SwitchVariant();
+            });
+            UiKit.Show(variantButton, false);
             prevButton.onClick.AddListener(() => { Deselect(); if (Director.IsTouring) Director.Previous(); });
             nextButton.onClick.AddListener(() => { Deselect(); if (Director.IsTouring) Director.Next(); });
             pauseButton.onClick.AddListener(() => { Deselect(); PauseOrReplay(); });
             stopButton.onClick.AddListener(() => { Deselect(); StopTour(); });
 
             stripTime = UiKit.Text("Time", strip, 15, MutedColor, TextAlignmentOptions.MidlineRight);
-            UiKit.Place(stripTime.rectTransform, StripWidth - Pad - 160, 114, 160, 26);
+            UiKit.Place(stripTime.rectTransform, StripWidth - Pad - 240, 114, 240, 26);
             // The time bar spans the strip under the via row; the tick marks where the glide ends.
             progressTrack = UiKit.Image("Progress", strip, new Color(1, 1, 1, .1f), 2);
             UiKit.Place(progressTrack.rectTransform, Pad, 147, StripWidth - 2 * Pad, 5);
@@ -762,6 +817,37 @@ namespace MusicHistory.Viewer
             return ok;
         }
 
+        /// <summary>Plays the selected path's duet loop (no narration); false when it has none.</summary>
+        public bool PlaySelectedDuet()
+        {
+            if (Selected < 0 || Selected >= paths.Count) return false;
+            FeaturedPath p = paths[Selected];
+            if (!p.IsPlayable || Director.DuetFor(p) == null)
+            {
+                Notice = p.IsPlayable ? "This path has no duet loop yet (data/audio/duets)." : "This path's songs are not all in the loaded graph, so it cannot play here.";
+                RefreshList();
+                return false;
+            }
+            loader.Highlighter.SetRoutePreview(null);
+            bool ok = Director.StartPathTour(p, true);
+            if (!ok)
+            {
+                Notice = "The duet loop could not start.";
+                RefreshList();
+                ApplyPreview();
+            }
+            return ok;
+        }
+
+        /// <summary>K or the strip's Duet / Mix button: the playing path's other variant.</summary>
+        public bool SwitchVariant()
+        {
+            if (State != PanelState.Playing || !Director.IsTouring) return false;
+            bool ok = Director.SwitchVariant();
+            RefreshNowPlaying();
+            return ok;
+        }
+
         /// <summary>Ends the path tour and returns to the list.</summary>
         public void StopTour()
         {
@@ -781,15 +867,15 @@ namespace MusicHistory.Viewer
         /// <summary>M or the Melody button: shows or hides the melody graph (only while a mashup plays).</summary>
         public bool ToggleMelody()
         {
-            if (State != PanelState.Playing || Director.CurrentMashup == null || loader.MelodyGraph == null) return false;
+            if (State != PanelState.Playing || (Director.CurrentMashup == null && Director.CurrentDuet == null) || loader.MelodyGraph == null) return false;
             loader.MelodyGraph.Toggle();
             RefreshNowPlaying();
             return true;
         }
 
-        /// <summary>The path playing has a mashup with narration (data/audio/narration): N toggles it.</summary>
+        /// <summary>The path playing has a mashup with narration (data/audio/narration, captions only): N toggles the captions.</summary>
         public bool NarrationAvailable =>
-            State == PanelState.Playing && loader != null && loader.Narration != null && Director.PathMashup is Mashup m && loader.Narration.For(m.Id) != null;
+            State == PanelState.Playing && loader != null && loader.Narration != null && !Director.DuetMode && Director.PathMashup is Mashup m && loader.Narration.For(m.Id) != null;
 
         /// <summary>A chip was clicked: jump to that step (it morphs from the song heard before).</summary>
         public void JumpTo(int step)
@@ -907,19 +993,21 @@ namespace MusicHistory.Viewer
         public void RefreshList()
         {
             if (list == null) return;
-            int playable = 0, mixes = 0;
+            int playable = 0, mixes = 0, duets = 0;
             double total = 0;
             foreach (FeaturedPath p in paths)
             {
                 if (p.IsPlayable) playable++;
                 Mashup? mix = Director.MashupFor(p);
                 if (mix != null) mixes++;
+                if (Director.DuetFor(p) != null) duets++;
                 total += mix != null ? mix.Duration : p.Seconds > 0 ? p.Seconds : SumSeconds(p);
             }
             UiKit.SetText(listSummary, paths.Count == 0
                 ? "none yet"
                 : $"{paths.Count} path{(paths.Count == 1 ? "" : "s")} · {PathCatalog.Clock(total)} of recording previews" +
                   (mixes > 0 ? $" · {mixes} mashup mix{(mixes == 1 ? "" : "es")}" : "") +
+                  (duets > 0 ? $" · {duets} duet loop{(duets == 1 ? "" : "s")}" : "") +
                   (playable < paths.Count ? $" · {paths.Count - playable} not in this graph" : ""));
 
             // Detail of the hovered row, else the selected one.
@@ -929,7 +1017,7 @@ namespace MusicHistory.Viewer
             // Room for the tallest detail, whichever row is shown: the rows and the footer stay put.
             float detailHeight = MaxDetailHeight(inner);
             float maxHeight = 1080f - 2 * Margin;
-            float fixedHeight = HeaderHeight + 14 + detailHeight + FooterHeight;
+            float fixedHeight = HeaderHeight + 14 + detailHeight + Footer;
             int fit = Mathf.Max(1, Mathf.FloorToInt((maxHeight - fixedHeight + RowGap) / (RowHeight + RowGap)));
             visibleRows = Math.Min(paths.Count, fit);
             firstRow = Mathf.Clamp(firstRow, 0, Math.Max(0, paths.Count - visibleRows));
@@ -989,13 +1077,28 @@ namespace MusicHistory.Viewer
                 y += h + 8;
             }
 
-            // Footer: key hints and the Play button.
+            // Footer: key hints and the Play button (with duet loops: the hints on a row above the
+            // Duet loop and Play buttons).
             y += 6;
             footerHint.text = empty
                 ? $"<b><color=#e6e9ee>Esc</color></b> close"
-                : $"<b><color=#e6e9ee>Enter</color></b> play   <b><color=#e6e9ee>↑↓</color></b> <b><color=#e6e9ee>1–{Math.Min(9, paths.Count)}</color></b> select   <b><color=#e6e9ee>Esc</color></b> close";
-            UiKit.Place(footerHint.rectTransform, Pad, y, inner - 160, 36);
+                : $"<b><color=#e6e9ee>Enter</color></b> play   " + (anyDuets ? "<b><color=#e6e9ee>K</color></b> duet loop   " : "") +
+                  $"<b><color=#e6e9ee>↑↓</color></b> <b><color=#e6e9ee>1–{Math.Min(9, paths.Count)}</color></b> select   <b><color=#e6e9ee>Esc</color></b> close";
+            if (anyDuets && !empty)
+            {
+                UiKit.Place(footerHint.rectTransform, Pad, y, inner, 26);
+                y += DuetFooterRow;
+            }
+            else UiKit.Place(footerHint.rectTransform, Pad, y, inner - 160, 36);
             UiKit.Show(playButton, !empty);
+            UiKit.Show(duetPlayButton, anyDuets && !empty);
+            if (anyDuets && !empty)
+            {
+                bool canDuet = Selected >= 0 && paths[Selected].IsPlayable && Director.DuetFor(paths[Selected]) != null;
+                duetPlayButton.interactable = canDuet;
+                duetPlayBack.color = canDuet ? UiKit.WithAlpha(AccentOf(paths[Selected]), .28f) : new Color(1, 1, 1, .06f);
+                UiKit.Place((RectTransform)duetPlayButton.transform, ListWidth - Pad - 150 - 10 - 180, y, 180, 36);
+            }
             bool canPlay = detail != null && Selected >= 0 && paths[Selected].IsPlayable;
             playButton.interactable = canPlay;
             playBack.color = canPlay ? AccentOf(paths[Selected]) : new Color(1, 1, 1, .12f);
@@ -1094,14 +1197,19 @@ namespace MusicHistory.Viewer
             if (!d.IsTouring || p == null) return;
             if (State != PanelState.Playing) OnTourChanged();
             Color accent = AccentOf(p);
+            if (d.CurrentDuet is DuetLoop duet && d.CurrentDuetSegment is DuetSegment duetSegment)
+            {
+                RefreshDuet(d, p, duet, duetSegment, accent);
+                return;
+            }
             if (d.CurrentMashup is Mashup mashup && d.CurrentSegment is MashupSegment segment)
             {
                 RefreshMashup(d, p, mashup, segment, accent);
                 return;
             }
-            LayoutButtons(false);
+            float variantX = LayoutButtons(false, d.DuetFor(p) != null, accent);
             foreach (Image mark in segmentMarks) UiKit.Show(mark, false);
-            UiKit.Place(stripReadout.rectTransform, Pad, 164, 740, 30);
+            UiKit.Place(stripReadout.rectTransform, Pad, 164, Mathf.Min(740, variantX - Pad - 12), 30);
             int step = d.StepIndex;
             WalkthroughDirector.StepReadout r = d.Readout();
             PathStep? s = step < p.Steps.Count ? p.Steps[step] : null;
@@ -1205,22 +1313,36 @@ namespace MusicHistory.Viewer
             nextButton.interactable = step + 1 < p.Steps.Count;
         }
 
-        /// <summary>The bottom-right buttons; a mashup adds the melody graph toggle left of Prev.</summary>
-        void LayoutButtons(bool mashup)
+        /// <summary>
+        /// The bottom-right buttons; a mashup or a duet loop adds the melody graph toggle left of Prev,
+        /// a path with a duet loop the Duet / Mix switch left of that. Returns the leftmost button's x.
+        /// </summary>
+        float LayoutButtons(bool melody, bool variant, Color accent)
         {
-            UiKit.Show(melodyButton, mashup);
+            float bx = StripWidth - Pad - (4 * 100 + 3 * 8);
+            UiKit.Show(melodyButton, melody);
+            float x = melody ? bx - 128 : bx;
+            UiKit.Show(variantButton, variant);
+            if (!variant) return x;
+            x -= 128;
+            UiKit.Place((RectTransform)variantButton.transform, x, 162, 120, 32);
+            bool duet = Director.DuetMode;
+            variantBack.color = duet ? UiKit.WithAlpha(accent, .3f) : new Color(1, 1, 1, .08f);
+            UiKit.SetText(variantLabel, duet ? "Mix  K" : "Duet  K");
+            return x;
         }
 
         /// <summary>The now-playing strip for a mashup mix: the segment, what is heard, the chord match, the whole mix's time bar.</summary>
         void RefreshMashup(WalkthroughDirector d, FeaturedPath p, Mashup m, MashupSegment g, Color accent)
         {
-            LayoutButtons(true);
+            float leftmost = LayoutButtons(true, d.DuetFor(p) != null, accent);
             int step = d.StepIndex, vocal = d.VocalStepIndex, n = p.Steps.Count;
             double t = d.MixSeconds, length = d.MashupAudio != null ? d.MashupAudio.DurationSeconds : m.Duration;
             stripAccent.color = accent;
             stripKicker.color = accent;
             string state = d.TourComplete ? "PATH COMPLETE" : d.ActivePlayer != null && d.ActivePlayer.Paused ? "PAUSED" : "NOW PLAYING";
-            string narration = NarrationAvailable ? (loader.Narration!.NarrationOn ? " · NARRATED  N" : " · NARRATION OFF  N") : "";
+            // Narration is captions only (no voiceover): N shows or hides them.
+            string narration = NarrationAvailable ? (loader.Narration!.NarrationOn ? " · CAPTIONS  N" : " · CAPTIONS OFF  N") : "";
             UiKit.SetText(stripKicker, $"{state} · FEATURED PATH · CONTINUOUS MIX{narration}");
             UiKit.SetText(stripTitle, GraphHud.Esc(p.Title));
 
@@ -1300,7 +1422,7 @@ namespace MusicHistory.Viewer
                 parts.Add($"<color={Muted}>vocal</color> <b>{(shift > 0 ? "+" : "")}{shift} st</b>" +
                           (g.VocalTempoRatio is double ratio && Math.Abs(ratio - 1) > .005 ? $" <color={Muted}>×{F(ratio, "0.00")}</color>" : ""));
             if (g.BeatErrorMs is double ms) parts.Add($"<color={Muted}>beats ±{F(ms, "0")} ms</color>");
-            float readoutWidth = StripWidth - Pad - 4 * 100 - 3 * 8 - 128 - Pad - 12;
+            float readoutWidth = leftmost - Pad - 12;
             string readout = "";
             for (int k = parts.Count; k >= 1; k--)
             {
@@ -1338,6 +1460,125 @@ namespace MusicHistory.Viewer
             nextButton.interactable = d.MashupStepReached + 1 < n;
         }
 
+        /// <summary>
+        /// The now-playing strip for a duet loop: "Duet: A + B over &lt;root&gt;" (and a handoff's
+        /// borrowed instrumental), key, BPM, chord match, "LOOP n" with the position in the loop;
+        /// the singers' chips VOCAL, the root's BED; the loop's handoffs on the time bar.
+        /// </summary>
+        void RefreshDuet(WalkthroughDirector d, FeaturedPath p, DuetLoop l, DuetSegment g, Color accent)
+        {
+            float leftmost = LayoutButtons(true, true, accent);
+            int n = p.Steps.Count, pairs = Math.Max(1, l.Pairs);
+            double t = d.LoopSeconds, length = d.DuetAudio != null && d.DuetAudio.DurationSeconds > 0 ? d.DuetAudio.DurationSeconds : l.Duration;
+            int cycle = d.LoopCycle;
+            stripAccent.color = accent;
+            stripKicker.color = accent;
+            string state = d.ActivePlayer != null && d.ActivePlayer.Paused ? "PAUSED" : "NOW PLAYING";
+            UiKit.SetText(stripKicker, $"{state} · FEATURED PATH · DUET LOOP");
+            UiKit.SetText(stripTitle, GraphHud.Esc(p.Title));
+
+            float right = StripWidth - Pad;
+            stepPill.Set($"PAIR {d.DuetPair + 1} / {pairs}");
+            right = stepPill.PlaceRight(right, 22) - 8;
+            DuetPlayer? player = d.DuetAudio;
+            if (player != null && player.CurrentAudio != null)
+            {
+                recordingPill.SetColors(UiKit.WithAlpha(RecordingColor, .2f), RecordingColor);
+                recordingPill.Set("● DUET LOOP");
+            }
+            else
+            {
+                recordingPill.SetColors(new Color(1, 1, 1, .08f), MutedColor);
+                recordingPill.Set(player != null && player.ClockSource == "loading" ? "LOADING LOOP" : "DUET · SILENT CLOCK");
+            }
+            recordingPill.PlaceRight(right, 22);
+
+            // Chips: both singers lit in their melody colours (VOCAL), the root's BED, a handoff's borrowed instrumental.
+            float x = Pad, width = StripWidth - 2 * Pad, arrow = 22f;
+            float chipWidth = (width - (n - 1) * arrow) / Math.Max(1, n);
+            int rootStep = l.StepOf(l.RootSong);
+            for (int i = 0; i < chips.Count; i++)
+            {
+                ChipView c = chips[i];
+                bool on = i < n;
+                UiKit.Show(c, on);
+                if (i > 0 && i - 1 < chipArrows.Count) UiKit.Show(chipArrows[i - 1], on);
+                if (!on) continue;
+                if (i > 0) UiKit.Place(chipArrows[i - 1].rectTransform, x - arrow, 70, arrow, 34);
+                UiKit.Place((RectTransform)c.transform, x, 70, chipWidth, 34);
+                PathStep ps = p.Steps[i];
+                bool singing = i == d.DuetSingerA || i == d.DuetSingerB;
+                bool borrowed = i == d.DuetBorrowedStep;
+                bool bed = i == rootStep && !(g.IsHandoff && d.DuetBorrowedStep >= 0);
+                DuetSong? song = l.SongForPathStep(i);
+                Color voice = song != null ? MelodyGraphPanel.BrightColor(song.Index) : accent;
+                c.Background.color = singing ? UiKit.WithAlpha(voice, .2f) : borrowed ? UiKit.WithAlpha(accent, .18f) : new Color(1, 1, 1, .035f);
+                c.Label.color = singing || borrowed ? TextColor : MutedColor;
+                string tag = singing ? $"  <size=78%><color={UiKit.Hex(voice)}><b>VOCAL</b></color></size>" : "";
+                if (bed) tag += $"  <size=78%><color={UiKit.Hex(accent)}><b>BED</b></color></size>";
+                if (borrowed) tag += $"  <size=78%><color={UiKit.Hex(accent)}><b>INSTRUMENTAL</b></color></size>";
+                UiKit.SetText(c.Label, $"<color={(singing ? UiKit.Hex(voice) : Muted)}>{ps.Year}</color>  " +
+                                       $"{(singing ? "<b>" : "")}{GraphHud.Esc(ps.Title)}{(singing ? "</b>" : "")}{tag}");
+                x += chipWidth + arrow;
+            }
+
+            // "Duet: A + B over Root" (and the handoff).
+            string Title(int song) => song >= 0 && song < l.Songs.Count ? l.Songs[song].Title : "?";
+            string Colored(int song) => $"<b><color={UiKit.Hex(MelodyGraphPanel.BrightColor(song))}>{GraphHud.Esc(Title(song))}</color></b>";
+            (int sa, int sb) = l.PairSongs(g.Pair);
+            string what = $"<b>Duet:</b> {Colored(sa)} + {Colored(sb)} <color={Muted}>over</color> <b>{GraphHud.Esc(Title(l.RootSong))}</b>";
+            if (g.IsHandoff)
+                what += g.InstrumentalSong >= 0 && g.InstrumentalSong != l.RootSong
+                    ? $"   <size=85%><color={Muted}>handoff:</color> {GraphHud.Esc(Title(g.EnteringSong))} <color={Muted}>enters over the instrumental of</color> {GraphHud.Esc(Title(g.InstrumentalSong))}</size>"
+                    : $"   <size=85%><color={Muted}>handoff:</color> {GraphHud.Esc(Title(g.EnteringSong))} <color={Muted}>enters</color></size>";
+            UiKit.SetText(stripVia, what);
+            UiKit.Show(strongPill.Root, false);
+
+            List<string> parts = new()
+            {
+                $"<color={Muted}>Key</color> <b>{GraphHud.Esc(l.Key)}</b>",
+                $"<color={Muted}>BPM</color> <b>{F(l.Bpm, "0.#")}</b>"
+            };
+            if (g.ChordMatch is double cm) parts.Add($"<color={Muted}>chords match</color> <b>{DuetCatalog.Percent(cm)}</b>");
+            // The loop's pass and position are on the right of the via row (stripTime), so the
+            // readout keeps its room for the key, the tempo and the chord match.
+            float readoutWidth = leftmost - Pad - 12;
+            string readout = "";
+            for (int k = parts.Count; k >= 1; k--)
+            {
+                readout = string.Join($"   <color={Muted}>·</color>   ", parts.GetRange(0, k));
+                if (stripReadout.GetPreferredValues(readout, 4000, 0).x <= readoutWidth) break;
+            }
+            UiKit.SetText(stripReadout, readout);
+            UiKit.Place(stripReadout.rectTransform, Pad, 164, readoutWidth, 30);
+            UiKit.SetText(stripTime, $"LOOP {cycle + 1} · {PathCatalog.Clock(t)} / {PathCatalog.Clock(length)}");
+
+            // The loop on the time bar; handoffs (white) marked above it, the one playing brighter.
+            float barWidth = progressTrack.rectTransform.sizeDelta.x;
+            UiKit.Place(progressFill.rectTransform, 0, 0, Mathf.Max(5f, barWidth * (float)(length > 0 ? Math.Min(1, t / length) : 0)), 5);
+            progressFill.color = accent;
+            UiKit.Show(glideMark, false);
+            int marks = 0;
+            foreach (DuetSegment s in l.Segments)
+            {
+                if (!s.IsHandoff || length <= 0) continue;
+                while (segmentMarks.Count <= marks) segmentMarks.Add(UiKit.Image($"Segment {segmentMarks.Count + 1}", progressTrack.transform, Color.white, 1));
+                Image mark = segmentMarks[marks++];
+                UiKit.Show(mark, true);
+                float x0 = barWidth * (float)(s.Start / length), x1 = barWidth * (float)(Math.Min(length, s.End) / length);
+                mark.color = new Color(1, 1, 1, s.Index == g.Index ? .75f : .32f);
+                UiKit.Place(mark.rectTransform, x0 + 1, -6, Mathf.Max(2f, x1 - x0 - 2), 3);
+            }
+            for (int k = marks; k < segmentMarks.Count; k++) UiKit.Show(segmentMarks[k], false);
+
+            bool graph = loader.MelodyGraph != null && loader.MelodyGraph.UserVisible;
+            melodyBack.color = graph ? UiKit.WithAlpha(accent, .3f) : new Color(1, 1, 1, .08f);
+            UiKit.SetText(melodyLabel, graph ? "Melody  M" : $"<color={Muted}>Melody  M</color>");
+            UiKit.SetText(pauseLabel, d.ActivePlayer != null && d.ActivePlayer.Paused ? "►  Resume" : "II  Pause");
+            prevButton.interactable = true;
+            nextButton.interactable = true;
+        }
+
         static string F(double v, string format) => v.ToString(format, CultureInfo.InvariantCulture);
         static string Signed(double v) => v.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture);
 
@@ -1348,7 +1589,7 @@ namespace MusicHistory.Viewer
             Key.P, Key.Escape, Key.Enter, Key.NumpadEnter, Key.UpArrow, Key.DownArrow, Key.PageUp, Key.PageDown,
             Key.Digit1, Key.Digit2, Key.Digit3, Key.Digit4, Key.Digit5, Key.Digit6, Key.Digit7, Key.Digit8, Key.Digit9,
             Key.Numpad1, Key.Numpad2, Key.Numpad3, Key.Numpad4, Key.Numpad5, Key.Numpad6, Key.Numpad7, Key.Numpad8, Key.Numpad9,
-            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C, Key.M
+            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C, Key.M, Key.K
         };
 
         void Update()
@@ -1392,6 +1633,9 @@ namespace MusicHistory.Viewer
                         case Key.NumpadEnter:
                             PlaySelected();
                             return true;
+                        case Key.K:
+                            PlaySelectedDuet();
+                            return true;
                     }
                     int digit = Digit(key);
                     if (digit >= 1 && digit <= paths.Count)
@@ -1412,7 +1656,7 @@ namespace MusicHistory.Viewer
                             PauseOrReplay();
                             return true;
                         case Key.N when NarrationAvailable:
-                            // A narrated path: N switches the narration (→ still steps on).
+                            // A narrated path: N switches the captions (→ still steps on).
                             loader.Narration!.Toggle();
                             return true;
                         case Key.N:
@@ -1432,6 +1676,8 @@ namespace MusicHistory.Viewer
                             return true;
                         case Key.M:
                             return ToggleMelody();
+                        case Key.K:
+                            return SwitchVariant();
                     }
                     return false;
             }
@@ -1496,6 +1742,8 @@ namespace MusicHistory.Viewer
         /// <summary>Width the title may use (it shrinks to fit, see <see cref="UiKit.FitWidth"/>).</summary>
         public float TitleWidth;
         public Image Background = null!, Accent = null!, Badge = null!, Track = null!, Span = null!;
+        /// <summary>The row's "Duet" button (paths with a duet loop; null otherwise).</summary>
+        public Button? DuetButton;
         public TextMeshProUGUI BadgeText = null!, Title = null!, Subtitle = null!, Duration = null!, Count = null!, Era = null!;
         public RectTransform Strip = null!;
         public readonly List<Image> Dots = new();

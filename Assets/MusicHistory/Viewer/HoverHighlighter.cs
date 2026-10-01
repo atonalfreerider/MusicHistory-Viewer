@@ -386,6 +386,37 @@ namespace MusicHistory.Viewer
             FocusChanged?.Invoke(child);
         }
 
+        /// <summary>
+        /// Duet loop: both singing songs glow, the edge between them lights up (the route's other
+        /// edges rest undimmed), a handoff's borrowed instrumental's song <paramref name="marked"/>
+        /// glows faintly, the rest of the route stays undimmed with its labels, everything else fades.
+        /// </summary>
+        public void ShowDuetStep(SongNode a, SongNode b, SongNode? marked, InfluenceEdge? pairEdge, GraphRoute route)
+        {
+            Suspended = true;
+            Loader.Labels.HideDimmed = true;
+            Hovered = null;
+            Focus = b;
+            FocusEdge = null;
+            FocusRoute = null;
+            applied = true;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
+            HashSet<SongNode> onRoute = new(route.Nodes);
+            HashSet<InfluenceEdge> routeEdges = new(route.Edges);
+            foreach (SongNode n in Loader.Nodes)
+                n.SetState(n == a || n == b ? BubbleState.Focus : n == marked ? BubbleState.Related
+                    : onRoute.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
+            foreach (InfluenceEdge e in Loader.Edges)
+            {
+                bool lit = e == pairEdge;
+                bool rest = !lit && routeEdges.Contains(e);
+                e.SetState(lit ? EdgeState.Highlight : rest ? EdgeState.Normal : EdgeState.Dimmed);
+                e.SetShown(e.IsTree || lit || rest || Loader.ShowAllSecondaryEdges);
+            }
+            SetExtraLabels(route.Nodes);
+            FocusChanged?.Invoke(b);
+        }
+
         public void EndTour()
         {
             Suspended = false;

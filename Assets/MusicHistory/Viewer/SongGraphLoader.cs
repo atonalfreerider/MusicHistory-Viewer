@@ -35,6 +35,12 @@ namespace MusicHistory.Viewer
     /// inspector's MashupsFile, else &lt;repo&gt;/data/audio/mashups/mashups.json. A path with a mashup
     /// plays it as one continuous mix with the melody graph (<see cref="MelodyGraphPanel"/>); a
     /// missing file leaves every path on its per-step previews.
+    ///
+    /// Duet loops (<see cref="DuetCatalog"/>, DESIGN.md §16): -musicHistoryDuets &lt;duets.json&gt;, else
+    /// the inspector's DuetsFile, else &lt;data&gt;/audio/duets/duets.json. A path with a duet loop offers
+    /// it next to its narrated mix (K); a missing file offers none.
+    ///
+    /// Artist photos (<see cref="ArtistImages"/>) also go onto the bubbles (<see cref="BubblePhotos"/>).
     /// </summary>
     [RequireComponent(typeof(ForceDirectedGraph))]
     public sealed class SongGraphLoader : MonoBehaviour
@@ -74,6 +80,8 @@ namespace MusicHistory.Viewer
         public string NarrationFile = "";
         [Tooltip("Blank: -musicHistoryArtists <artists.json>, else <data>/images/artists.json.")]
         public string ArtistsFile = "";
+        [Tooltip("Blank: -musicHistoryDuets <duets.json>, else <data>/audio/duets/duets.json.")]
+        public string DuetsFile = "";
 
         [Header("Labels")]
         [Range(0, 300)] public int AlwaysLabelledSongs = 40;
@@ -103,8 +111,12 @@ namespace MusicHistory.Viewer
         public FeaturedPathsPanel? Paths { get; private set; }
         /// <summary>The featured paths' mashup mixes, bound to this graph and the paths (empty when mashups.json is missing).</summary>
         public MashupCatalog Mashups { get; private set; } = MashupCatalog.Empty("not loaded");
-        /// <summary>The melody graph shown while a mashup plays (M).</summary>
+        /// <summary>The melody graph shown while a mashup or a duet loop plays (M).</summary>
         public MelodyGraphPanel? MelodyGraph { get; private set; }
+        /// <summary>The featured paths' duet loops, bound to this graph and the paths (empty when duets.json is missing).</summary>
+        public DuetCatalog Duets { get; private set; } = DuetCatalog.Empty("not loaded");
+        /// <summary>The artist photos on the bubbles.</summary>
+        public BubblePhotos? BubblePhotos { get; private set; }
         /// <summary>The narrated walkthroughs (data/audio/narration/narration.json; empty when missing).</summary>
         public NarrationCatalog NarrationCatalog { get; private set; } = NarrationCatalog.Empty("not loaded");
         /// <summary>The artist photos the narration shows (data/images/artists.json; empty when missing).</summary>
@@ -263,6 +275,8 @@ namespace MusicHistory.Viewer
             UseCatalog(PathCatalog.Load(pathsFile), pathsReason);
             string mashupsFile = ResolveMashupsPath(MashupsFile, out string mashupsReason);
             UseMashups(MashupCatalog.Load(mashupsFile), mashupsReason);
+            string duetsFile = ResolveDuetsPath(DuetsFile, out string duetsReason);
+            UseDuets(DuetCatalog.Load(duetsFile), duetsReason);
             string narrationFile = NarrationCatalog.ResolvePath(NarrationFile, out string narrationReason);
             string artistsFile = ArtistImages.ResolvePath(ArtistsFile, out string artistsReason);
             UseNarration(NarrationCatalog.Load(narrationFile), ArtistImages.Load(artistsFile), $"{narrationReason}; photos {artistsReason}");
@@ -294,8 +308,9 @@ namespace MusicHistory.Viewer
                 Catalog.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null);
             }
             Director.UseCatalog(Catalog);
-            // The mashups follow the paths they play (the list shows which paths have one).
+            // The mashups and duet loops follow the paths they play (the list shows which paths have one).
             if (Mashups.Mashups.Count > 0) BindMashups();
+            if (Duets.Loops.Count > 0) BindDuets();
             Paths = GetOrAdd<FeaturedPathsPanel>();
             Paths.Build(this);
             string where = Catalog.SourcePath.Length > 0 ? Catalog.SourcePath : "(in memory)";
@@ -323,12 +338,42 @@ namespace MusicHistory.Viewer
         }
 
         /// <summary>
+        /// Binds <paramref name="catalog"/> (duets.json) to this graph and the featured paths and hands
+        /// it to the walkthrough; the featured-paths list offers each path's duet loop.
+        /// </summary>
+        public void UseDuets(DuetCatalog catalog, string reason = "")
+        {
+            Duets = catalog ?? DuetCatalog.Empty("none");
+            BindDuets();
+            if (Paths != null) Paths.Build(this);
+            string where = Duets.SourcePath.Length > 0 ? Duets.SourcePath : "(in memory)";
+            Debug.Log($"MusicHistory: duet loops {Duets.Status}; {Duets.PlayableCount} playable; {where}" +
+                      (reason.Length > 0 ? $" [{reason}]" : "") +
+                      (Duets.Problems.Count > 0 ? $"; {Duets.Problems.Count} problems, first: {string.Join(" | ", Duets.Problems.Take(3))}" : ""));
+        }
+
+        void BindDuets()
+        {
+            if (Data != null)
+            {
+                Dictionary<string, int> byWork = new(StringComparer.Ordinal);
+                foreach (SongRecord s in Data.Songs)
+                    if (!string.IsNullOrEmpty(s.WorkId) && !byWork.ContainsKey(s.WorkId)) byWork[s.WorkId] = s.NodeId;
+                Duets.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null, Catalog);
+            }
+            Director.UseDuets(Duets);
+        }
+
+        /// <summary>
         /// The narrated walkthroughs (narration.json) and the artist photos (artists.json): the
-        /// narration follows the walkthrough's mashup mix; the overlay shows its caption and photos.
+        /// narration follows the walkthrough's mashup mix; the overlay shows its caption and photos;
+        /// the photos also go onto their songs' bubbles.
         /// </summary>
         public void UseNarration(NarrationCatalog catalog, ArtistImages images, string reason = "")
         {
             NarrationCatalog = catalog ?? NarrationCatalog.Empty("none");
+            // The bubble photos let go of the old textures first.
+            if (BubblePhotos != null) BubblePhotos.Clear();
             ArtistImages.Release();
             ArtistImages = images ?? ArtistImages.Empty("none");
             Narration = GetOrAdd<NarrationPlayer>();
@@ -337,8 +382,10 @@ namespace MusicHistory.Viewer
             else Narration.UseCatalog(NarrationCatalog);
             NarrationOverlay = GetOrAdd<NarrationOverlay>();
             NarrationOverlay.Build(this);
+            BubblePhotos = GetOrAdd<BubblePhotos>();
+            BubblePhotos.Apply(this);
             string where = NarrationCatalog.SourcePath.Length > 0 ? NarrationCatalog.SourcePath : "(in memory)";
-            Debug.Log($"MusicHistory: narration {NarrationCatalog.Status}; photos {ArtistImages.Status}; {where}" +
+            Debug.Log($"MusicHistory: narration {NarrationCatalog.Status}; photos {ArtistImages.Status} (bubbles: {BubblePhotos.Status}); {where}" +
                       (reason.Length > 0 ? $" [{reason}]" : "") +
                       (NarrationCatalog.Problems.Count > 0 ? $"; {NarrationCatalog.Problems.Count} narration problems, first: {string.Join(" | ", NarrationCatalog.Problems.Take(3))}" : "") +
                       (ArtistImages.Problems.Count > 0 ? $"; {ArtistImages.Problems.Count} photo problems, first: {string.Join(" | ", ArtistImages.Problems.Take(3))}" : ""));
@@ -533,6 +580,8 @@ namespace MusicHistory.Viewer
         public void RefreshView(Camera cam)
         {
             if (RouteLine != null) RouteLine.Refresh(cam);
+            // Edit-mode captures: the photos of the bubbles in view (play mode loads them a few per frame).
+            if (BubblePhotos != null) BubblePhotos.Refresh(cam);
             Labels.Refresh(cam);
             Timeline.Refresh(cam);
             Labels.ForceMeshUpdate();
@@ -584,6 +633,7 @@ namespace MusicHistory.Viewer
         public void Clear()
         {
             if (Director != null) Director.Exit();
+            if (BubblePhotos != null) BubblePhotos.Clear();
             routes.Clear();
             if (Simulation != null) Simulation.Clear();
             if (Labels != null) Labels.Clear();
@@ -667,6 +717,25 @@ namespace MusicHistory.Viewer
             }
             reason = "default";
             return Path.Combine(RepoRoot(), "data", "audio", "mashups", MashupCatalog.FileName);
+        }
+
+        /// <summary>duets.json: -musicHistoryDuets, else <paramref name="configured"/>, else &lt;data&gt;/audio/duets/duets.json.</summary>
+        public static string ResolveDuetsPath(string configured, out string reason)
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+            {
+                if (!string.Equals(args[i], DuetCatalog.CommandLineFlag, StringComparison.OrdinalIgnoreCase)) continue;
+                reason = "command line";
+                return ResolveUserPath(args[i + 1]);
+            }
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                reason = "inspector";
+                return ResolveUserPath(configured);
+            }
+            reason = "default";
+            return DuetCatalog.DefaultPath();
         }
 
         public static string ResolveDatabasePath(string configured, out string reason)

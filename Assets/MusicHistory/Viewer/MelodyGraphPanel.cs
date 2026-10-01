@@ -12,16 +12,29 @@ using UnityEngine.UI;
 namespace MusicHistory.Viewer
 {
     /// <summary>
-    /// The melody graph shown while a featured path plays its mashup mix (M or the strip's
-    /// "Melody" button toggles it). x is the position in the shared phrase (bars marked, the
-    /// chord progression's roman numerals in the chord strip), y the sung pitch in the normalized
-    /// C major / A minor frame (note-name ticks). Every song's melody of the path is drawn on top
-    /// of the others in its own muted colour (legend: title, year); the melodies whose vocal is
-    /// audible right now are bright and thicker, each with a point of bloom light riding on it at
-    /// the current phrase beat and the melody's pitch there. Along the bottom, the chord colour
-    /// strip of the instrumental playing (the viewer's key palette: circle-of-fifths hue, minor
-    /// darker), and during a changeover a thin strip of the vocal's own chords above it; a
-    /// playhead runs through the graph and the strips.
+    /// The melody graph shown while a featured path plays its mashup mix or its duet loop (M or the
+    /// strip's "Melody" button toggles it). y is the sung pitch in the normalized C major / A minor
+    /// frame (note-name ticks). Every song's melody of the path is drawn on top of the others in its
+    /// own muted colour (legend: title, year); the melodies whose vocal is audible right now are
+    /// bright and thicker, each with a point of bloom light riding on it at the playhead and the
+    /// melody's pitch there. Along the bottom, the chord colour strip (the viewer's key palette:
+    /// circle-of-fifths hue, minor darker), and during a changeover a thin strip of the vocal's own
+    /// chords above it.
+    ///
+    /// Three ways to show time (DESIGN.md §14, §16):
+    /// <list type="bullet">
+    /// <item>A narrated mix, landscape: x is the position in the shared phrase, the whole phrase
+    /// across the panel; the playhead runs through it.</item>
+    /// <item>A narrated mix, portrait (<see cref="ViewerLayout"/>'s vertical layout): the graph is
+    /// <see cref="PortraitScale"/> times larger (pixels per beat and per semitone) and pans right to
+    /// left under a playhead fixed at the panel's centre, which is the screen's centre; the
+    /// phrase-folded x wraps around the phrase as it pans (<see cref="MelodyScroll"/>).</item>
+    /// <item>A duet loop, either layout: a timeline of mix beats panning the same way and wrapping
+    /// seamlessly at the loop point (portrait again three times larger); the two singing melodies
+    /// bright with their lights, the chord strip the bed's chords.</item>
+    /// </list>
+    /// A panning graph is drawn into a masked content strip around an anchor beat and only shifted
+    /// per frame; it is redrawn when the playhead has moved a few beats from the anchor.
     ///
     /// The panel is on its own Screen Space - Camera canvas on the view camera, directly above the
     /// now-playing strip, the same width, clear of the HUD. uGUI is drawn after URP's
@@ -32,17 +45,28 @@ namespace MusicHistory.Viewer
     public sealed class MelodyGraphPanel : MonoBehaviour
     {
         public const float PanelWidth = 1240f;
+        /// <summary>Height of the landscape panel.</summary>
         public const float PanelHeight = 272f;
+        /// <summary>The portrait graph is this many times larger: pixels per beat and per semitone.</summary>
+        public const float PortraitScale = 3f;
         /// <summary>Gap between the now-playing strip and this panel.</summary>
         public const float Gap = 10f;
-        /// <summary>Bottom of the panel above the screen's bottom edge (reference px).</summary>
+        /// <summary>Bottom of the panel above the screen's bottom edge (reference px, landscape).</summary>
         public static float PanelBottom => 16f + FeaturedPathsPanel.StripHeight + Gap;
 
         const float PlotLeft = 64f, PlotRightPad = 22f, PlotTop = 52f;
         const float ChordStripHeight = 26f, VocalStripHeight = 5f, BottomPad = 14f;
-        static float ChordTop => PanelHeight - BottomPad - ChordStripHeight;
-        static float VocalTop => ChordTop - 3f - VocalStripHeight;
-        static float PlotBottom => VocalTop - 6f;
+        static float ChordTopFor(float h) => h - BottomPad - ChordStripHeight;
+        static float VocalTopFor(float h) => ChordTopFor(h) - 3f - VocalStripHeight;
+        static float PlotBottomFor(float h) => VocalTopFor(h) - 6f;
+        /// <summary>The landscape plot's height (the portrait one is <see cref="PortraitScale"/> times it).</summary>
+        public static float LandscapePlotHeight => PlotBottomFor(PanelHeight) - PlotTop;
+        /// <summary>Height of the portrait panel: the same chrome around a plot three times as tall.</summary>
+        public static float PortraitPanelHeight => PanelHeight + (PortraitScale - 1f) * LandscapePlotHeight;
+        /// <summary>Panel height for a layout.</summary>
+        public static float HeightFor(bool portrait) => portrait ? PortraitPanelHeight : PanelHeight;
+        /// <summary>The playhead's x while the graph pans: the panel's centre, which is the screen's centre.</summary>
+        public const float ScrollHeadX = PanelWidth * .5f;
 
         [Tooltip("Bloom intensity of the light points' own camera (the graph's bloom is not changed).")]
         [Min(0f)] public float LightBloom = 4f;
@@ -50,6 +74,8 @@ namespace MusicHistory.Viewer
         [Range(0f, 1f)] public float RestLevel = .35f;
         [Tooltip("Brightness of the backing's own melody's light during a changeover (1 = the vocal singing over it).")]
         [Range(0f, 1f)] public float BackingLevel = .45f;
+        [Tooltip("A panning graph is redrawn when the playhead is this many pixels from where it was drawn.")]
+        [Min(40f)] public float RedrawPixels = 360f;
 
         static readonly Color SheetColor = new(.03f, .035f, .045f, .94f);
         static readonly Color TextColor = new(.94f, .95f, .97f, 1f);
@@ -94,9 +120,14 @@ namespace MusicHistory.Viewer
             public bool Backing;
             public float Width;
             public Color Color;
-            /// <summary>Points drawn (panel px, y down), every piece.</summary>
+            /// <summary>
+            /// Points drawn (y down): panel px for the static graph; content px for a panning one
+            /// (add <see cref="MelodyGraphPanel.ContentShift"/> to x for the panel).
+            /// </summary>
             public readonly List<Vector2> Points = new();
             public readonly List<List<Vector2>> Pieces = new();
+            /// <summary>The melody in unwrapped beats (panning graphs).</summary>
+            public List<MelodyScroll.Piece> Sung = new();
         }
 
         /// <summary>A point of light riding on a playing melody.</summary>
@@ -121,36 +152,52 @@ namespace MusicHistory.Viewer
         RectTransform? root;
         RectTransform panel = null!;
         TextMeshProUGUI kicker = null!, subtitle = null!, playheadTag = null!, chordsLabel = null!, vocalLabel = null!, emptyText = null!;
-        UiShapes grid = null!, chordStrip = null!, vocalStrip = null!;
-        Image playhead = null!, playheadCap = null!, chordUnderline = null!, chordCurrent = null!;
+        UiShapes grid = null!, bars = null!, chordStrip = null!, vocalStrip = null!;
+        Image playhead = null!, playheadCap = null!, chordUnderline = null!, chordCurrent = null!, background = null!;
         readonly List<TextMeshProUGUI> pitchLabels = new();
         readonly List<TextMeshProUGUI> romanLabels = new();
         readonly List<(Image swatch, TextMeshProUGUI text)> legend = new();
         readonly List<LineView> lines = new();
         readonly List<DotView> dots = new();
         MelodyLightRig? rig;
-        RectTransform linesRoot = null!, dotsRoot = null!;
+        RectTransform viewport = null!, content = null!, linesRoot = null!, dotsRoot = null!;
+        RectMask2D mask = null!;
 
+        // What is shown: a narrated mix or a duet loop.
         Mashup? shown;
+        DuetLoop? shownDuet;
+        readonly List<MashupSong> songs = new();
+        float height = PanelHeight;
+        bool portrait, scrolling;
+        double period = 32, phraseBeats = 32;
+        int beatsPerBar = 4;
         float pitchLo = 55, pitchHi = 79;
         int stripSong = -2, vocalStripSong = -2, backingSong = -1;
+        IReadOnlyList<MashupChord>? stripChords, vocalChords;
         int tagBar = -1;
         string tagRoman = "";
         readonly List<int> vocals = new(), instrumentals = new();
+        // Panning: the beat the content was drawn around, and whether it must be drawn again.
+        double anchor;
+        bool windowDirty = true;
+        readonly List<Vector2> scratch = new();
 
-        /// <summary>The user's toggle (M, the strip's button): the graph shows while a mashup plays.</summary>
+        /// <summary>The user's toggle (M, the strip's button): the graph shows while a mix or a duet loop plays.</summary>
         public bool UserVisible { get; private set; } = true;
         public bool Showing => root != null && root.gameObject.activeSelf;
+        /// <summary>The narrated mix shown (null while a duet loop or nothing shows).</summary>
         public Mashup? Shown => Showing ? shown : null;
+        /// <summary>The duet loop shown (null while a narrated mix or nothing shows).</summary>
+        public DuetLoop? ShownDuet => Showing ? shownDuet : null;
         public RectTransform? PanelRect => root != null ? panel : null;
         public Canvas? Canvas => canvas;
         public IReadOnlyList<LineView> Lines => lines;
         public IReadOnlyList<DotView> Dots => dots;
-        /// <summary>Phrase beat under the playhead.</summary>
+        /// <summary>Position on the graph's beat axis under the playhead: the phrase beat of a mix, the mix beat of a duet loop.</summary>
         public double PhraseBeat { get; private set; }
         /// <summary>Playhead x in panel px.</summary>
         public float PlayheadX { get; private set; }
-        /// <summary>Mashup song whose chords the strip shows (the instrumental playing), -1 when none.</summary>
+        /// <summary>Mashup song whose chords the strip shows (the instrumental playing; a duet's root), -1 when none.</summary>
         public int StripSong => stripSong;
         /// <summary>Song whose own chords the thin strip shows during a changeover (-1 when hidden).</summary>
         public int VocalStripSong => vocalStripSong;
@@ -160,10 +207,35 @@ namespace MusicHistory.Viewer
         public float PitchHigh => pitchHi;
         /// <summary>The bloomed light points (null without the MusicHistory/MelodyGlow shader).</summary>
         public MelodyLightRig? Lights => rig;
+        /// <summary>The panel's current height (reference px): <see cref="PanelHeight"/> or <see cref="PortraitPanelHeight"/>.</summary>
+        public float Height => height;
+        /// <summary>Laid out for the vertical layout (three times larger).</summary>
+        public bool Portrait => portrait;
+        /// <summary>The graph pans under a fixed playhead (portrait, or a duet loop).</summary>
+        public bool Scrolling => scrolling;
+        /// <summary>The beat axis' period: the phrase (a mix) or the loop's beats (a duet).</summary>
+        public double Period => period;
+        /// <summary>Horizontal scale, reference px per beat.</summary>
+        public float PixelsPerBeat { get; private set; }
+        /// <summary>Vertical scale, reference px per semitone.</summary>
+        public float PixelsPerSemitone => Plot.height / Mathf.Max(1f, pitchHi - pitchLo);
+        /// <summary>Panning graphs: content x + this = panel x.</summary>
+        public float ContentShift { get; private set; }
+        /// <summary>Panning graphs: the beat the content is drawn around.</summary>
+        public double Anchor => anchor;
+        /// <summary>Times a panning graph's content was drawn (validation, profiling).</summary>
+        public int WindowBuilds { get; private set; }
 
-        /// <summary>The plot area in panel px (y down).</summary>
-        public static Rect PlotArea => new(PlotLeft, PlotTop, PanelWidth - PlotLeft - PlotRightPad, PlotBottom - PlotTop);
-        public static Rect ChordArea => new(PlotLeft, ChordTop, PanelWidth - PlotLeft - PlotRightPad, ChordStripHeight);
+        /// <summary>The landscape plot area in panel px (y down).</summary>
+        public static Rect PlotArea => PlotFor(PanelHeight);
+        public static Rect ChordArea => ChordFor(PanelHeight);
+        public static Rect PlotFor(float h) => new(PlotLeft, PlotTop, PanelWidth - PlotLeft - PlotRightPad, PlotBottomFor(h) - PlotTop);
+        public static Rect ChordFor(float h) => new(PlotLeft, ChordTopFor(h), PanelWidth - PlotLeft - PlotRightPad, ChordStripHeight);
+        /// <summary>The current plot area in panel px (y down).</summary>
+        public Rect Plot => PlotFor(height);
+        public Rect ChordRect => ChordFor(height);
+        float ChordTop => ChordTopFor(height);
+        float VocalTop => VocalTopFor(height);
 
         /// <summary>Legend text (titles and years, the playing ones marked), for validation.</summary>
         public string LegendText
@@ -200,6 +272,9 @@ namespace MusicHistory.Viewer
             }
         }
 
+        public string KickerText => kicker != null ? kicker.text : "";
+        public string PlayheadTagText => playheadTag != null ? playheadTag.text : "";
+
         // ------------------------------------------------------------------ build
 
         public void Build(SongGraphLoader owner)
@@ -217,17 +292,19 @@ namespace MusicHistory.Viewer
             AttachCamera();
             root = (RectTransform)go.transform;
 
+            height = PanelHeight;
+            portrait = scrolling = false;
             panel = UiKit.Rect("Melody Graph", root);
             panel.anchorMin = panel.anchorMax = new Vector2(.5f, 0f);
             panel.pivot = new Vector2(.5f, 0f);
             panel.anchoredPosition = new Vector2(0, PanelBottom);
             panel.sizeDelta = new Vector2(PanelWidth, PanelHeight);
             panel.gameObject.AddComponent<CanvasRenderer>();
-            Image back = panel.gameObject.AddComponent<Image>();
-            back.sprite = UiKit.Rounded(14);
-            back.type = Image.Type.Sliced;
-            back.color = SheetColor;
-            back.raycastTarget = false;
+            background = panel.gameObject.AddComponent<Image>();
+            background.sprite = UiKit.Rounded(14);
+            background.type = Image.Type.Sliced;
+            background.color = SheetColor;
+            background.raycastTarget = false;
 
             kicker = UiKit.Text("Kicker", panel, 12, Accent, TextAlignmentOptions.MidlineLeft, bold: true);
             kicker.characterSpacing = 6;
@@ -237,32 +314,34 @@ namespace MusicHistory.Viewer
             UiKit.Place(subtitle.rectTransform, 160, 11, 300, 20);
 
             grid = Shapes("Grid", panel);
-            chordStrip = Shapes("Chord Strip", panel);
-            vocalStrip = Shapes("Vocal Chord Strip", panel);
-            chordCurrent = UiKit.Image("Current Chord", panel, new Color(1, 1, 1, .16f));
-            chordUnderline = UiKit.Image("Current Chord Underline", panel, new Color(1, 1, 1, .9f), 1);
+            // Everything that moves with the beat lives in the content strip, clipped to the plot when it pans.
+            viewport = UiKit.Rect("Viewport", panel);
+            mask = viewport.gameObject.AddComponent<RectMask2D>();
+            content = UiKit.Rect("Content", viewport);
+            bars = Shapes("Bar Lines", content);
+            chordStrip = Shapes("Chord Strip", content);
+            vocalStrip = Shapes("Vocal Chord Strip", content);
+            chordCurrent = UiKit.Image("Current Chord", content, new Color(1, 1, 1, .16f));
+            chordUnderline = UiKit.Image("Current Chord Underline", content, new Color(1, 1, 1, .9f), 1);
+            linesRoot = UiKit.Rect("Melodies", content);
             chordsLabel = UiKit.Text("Chords Label", panel, 10, DimColor, TextAlignmentOptions.MidlineRight);
             chordsLabel.text = "chords";
-            UiKit.Place(chordsLabel.rectTransform, 4, ChordTop, PlotLeft - 10, ChordStripHeight);
             vocalLabel = UiKit.Text("Vocal Label", panel, 9, DimColor, TextAlignmentOptions.MidlineRight);
             vocalLabel.text = "vocal's own";
-            UiKit.Place(vocalLabel.rectTransform, 4, VocalTop - 4, PlotLeft - 10, VocalStripHeight + 8);
 
-            linesRoot = UiKit.Rect("Melodies", panel);
-            UiKit.Place(linesRoot, 0, 0, PanelWidth, PanelHeight);
             playhead = UiKit.Image("Playhead", panel, new Color(1, 1, 1, .72f));
             playheadCap = UiKit.Dot("Playhead Cap", panel, new Color(1, 1, 1, .9f));
             playheadTag = UiKit.Text("Playhead Tag", panel, 11, TextColor, TextAlignmentOptions.Center, bold: true);
             dotsRoot = UiKit.Rect("Light Points", panel);
-            UiKit.Place(dotsRoot, 0, 0, PanelWidth, PanelHeight);
             emptyText = UiKit.Text("Empty", panel, 14, MutedColor, TextAlignmentOptions.Center);
-            UiKit.Place(emptyText.rectTransform, PlotLeft, PlotTop, PlotArea.width, PlotArea.height);
             emptyText.text = "No sung melody was tracked for these songs.";
 
             Shader? glow = Shader.Find(GlowShaderName);
             if (glow != null) rig = new MelodyLightRig(owner.transform, panel, PanelWidth, PanelHeight, glow) { BloomIntensity = LightBloom };
             else Debug.LogWarning($"MusicHistory: shader {GlowShaderName} not found; the melody graph's light points will not bloom.");
+            LayoutChrome();
             shown = null;
+            shownDuet = null;
             root.gameObject.SetActive(false);
         }
 
@@ -271,14 +350,55 @@ namespace MusicHistory.Viewer
         /// <summary>HDR intensity of a glow material (0 when it has none).</summary>
         public static float IntensityOf(Material? m) => m != null && m.HasProperty("_Intensity") ? m.GetFloat("_Intensity") : 0f;
 
-        static UiShapes Shapes(string name, Transform parent)
+        UiShapes Shapes(string name, Transform parent)
         {
             RectTransform r = UiKit.Rect(name, parent);
-            UiKit.Place(r, 0, 0, PanelWidth, PanelHeight);
+            UiKit.Place(r, 0, 0, PanelWidth, height);
             r.gameObject.AddComponent<CanvasRenderer>();
             UiShapes s = r.gameObject.AddComponent<UiShapes>();
             s.raycastTarget = false;
             return s;
+        }
+
+        /// <summary>Sizes the panel and places the parts that depend on its height and on panning.</summary>
+        void LayoutChrome()
+        {
+            panel.sizeDelta = new Vector2(PanelWidth, height);
+            Rect plot = Plot;
+            foreach (UiShapes s in new[] { grid, bars, chordStrip, vocalStrip }) UiKit.Place(s.rectTransform, 0, 0, PanelWidth, height);
+            UiKit.Place(linesRoot, 0, 0, PanelWidth, height);
+            UiKit.Place(dotsRoot, 0, 0, PanelWidth, height);
+            foreach (LineView l in lines)
+            {
+                UiKit.Place(l.Line.rectTransform, 0, 0, PanelWidth, height);
+                UiKit.Place(l.Glow.rectTransform, 0, 0, PanelWidth, height);
+            }
+            UiKit.Place(chordsLabel.rectTransform, 4, ChordTop, PlotLeft - 10, ChordStripHeight);
+            UiKit.Place(vocalLabel.rectTransform, 4, VocalTop - 4, PlotLeft - 10, VocalStripHeight + 8);
+            UiKit.Place(emptyText.rectTransform, PlotLeft, PlotTop, plot.width, plot.height);
+            if (scrolling)
+            {
+                // The plot's columns only, from the plot's top to under the chord strip's underline.
+                float top = plot.yMin - 2f, bottom = ChordTop + ChordStripHeight + 6f;
+                UiKit.Place(viewport, plot.xMin, top, plot.width, bottom - top);
+                mask.enabled = true;
+            }
+            else
+            {
+                UiKit.Place(viewport, 0, 0, PanelWidth, height);
+                mask.enabled = false;
+            }
+            PlaceContent(0f);
+            rig?.Resize(PanelWidth, height);
+        }
+
+        /// <summary>Content at panel coordinates, shifted by <paramref name="shift"/> px (panning).</summary>
+        void PlaceContent(float shift)
+        {
+            ContentShift = shift;
+            Vector2 at = scrolling ? new Vector2(-viewport.anchoredPosition.x + shift, viewport.anchoredPosition.y) : Vector2.zero;
+            // Viewport is placed top-left at (x, -y): the content's top-left goes back to the panel's.
+            UiKit.Place(content, at.x, at.y, PanelWidth, height);
         }
 
         /// <summary>Puts the canvas on the view camera (Screen Space - Camera, so bloom reaches it); overlay without one.</summary>
@@ -308,6 +428,8 @@ namespace MusicHistory.Viewer
             root = null;
             canvas = null;
             shown = null;
+            shownDuet = null;
+            songs.Clear();
             lines.Clear();
             dots.Clear();
             pitchLabels.Clear();
@@ -340,38 +462,60 @@ namespace MusicHistory.Viewer
 
         void LateUpdate() => Refresh();
 
-        /// <summary>Follows the mashup playing now (public so edit-mode validation can drive it).</summary>
+        /// <summary>Follows the mix or the duet loop playing now (public so edit-mode validation can drive it).</summary>
         public void Refresh()
         {
             if (root == null || loader == null) return;
             WalkthroughDirector? d = loader.Director;
             Mashup? m = d != null ? d.CurrentMashup : null;
-            bool show = m != null && UserVisible;
+            DuetLoop? duet = d != null ? d.CurrentDuet : null;
+            bool show = (m != null || duet != null) && UserVisible;
             if (root.gameObject.activeSelf != show) root.gameObject.SetActive(show);
-            if (!show || m == null || d == null)
+            if (!show || d == null)
             {
                 rig?.Sync(false, 1f, false);
                 return;
             }
             AttachCamera();
-            if (!ReferenceEquals(m, shown)) Rebuild(m);
+            bool portraitNow = loader.Layout != null && loader.Layout.Format == ScreenFormat.Vertical;
+            bool scrollNow = duet != null || portraitNow;
+            if (!ReferenceEquals(duet, shownDuet) || (duet == null && !ReferenceEquals(m, shown)) || portraitNow != portrait || scrollNow != scrolling)
+                Rebuild(duet == null ? m : null, duet, portraitNow);
 
-            double t = d.MixSeconds;
-            m.AudibleAt(t, vocals, instrumentals);
-            MashupSegment? seg = m.SegmentAt(t);
-            double beat = m.PhraseBeatAt(t);
+            // Where the playhead is, who sings, which chords sound.
+            double beat;
+            int inst, vocalOwn;
+            MashupChord? chord;
+            if (duet != null)
+            {
+                double t = d.LoopSeconds;
+                duet.AudibleAt(t, vocals, instrumentals);
+                beat = duet.BeatAt(t);
+                inst = duet.RootSong;
+                vocalOwn = -1;
+                backingSong = -1;
+                if (!ReferenceEquals(stripChords, duet.Chords) || stripSong != inst) SetStrip(inst, duet.Chords);
+                if (vocalStripSong != -1) SetVocalStrip(-1, null);
+                chord = duet.ChordAt(beat);
+            }
+            else
+            {
+                double t = d.MixSeconds;
+                m!.AudibleAt(t, vocals, instrumentals);
+                MashupSegment? seg = m.SegmentAt(t);
+                beat = m.PhraseBeatAt(t);
+                // Chord strips: the instrumental playing; during a changeover, the vocal's own chords above it.
+                inst = seg != null ? seg.InstrumentalSong : instrumentals.Count > 0 ? instrumentals[0] : -1;
+                if (inst != stripSong) SetStrip(inst, inst >= 0 ? m.Songs[inst].Chords : null);
+                vocalOwn = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.VocalSong >= 0 && seg.VocalSong != inst ? seg.VocalSong : -1;
+                if (vocalOwn != vocalStripSong) SetVocalStrip(vocalOwn, vocalOwn >= 0 ? m.Songs[vocalOwn].Chords : null);
+                // During a changeover the backing's own melody (the tune this instrumental was made for)
+                // is highlighted too, a step below the vocal singing over it: two melodies on one track.
+                backingSong = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.InstrumentalSong >= 0 &&
+                              !vocals.Contains(seg.InstrumentalSong) ? seg.InstrumentalSong : -1;
+                chord = inst >= 0 ? m.Songs[inst].ChordAt(beat) : null;
+            }
             PhraseBeat = beat;
-
-            // Chord strips: the instrumental playing; during a changeover, the vocal's own chords above it.
-            int inst = seg != null ? seg.InstrumentalSong : instrumentals.Count > 0 ? instrumentals[0] : -1;
-            if (inst != stripSong) BuildChordStrip(m, inst);
-            int vocalOwn = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.VocalSong >= 0 && seg.VocalSong != inst ? seg.VocalSong : -1;
-            if (vocalOwn != vocalStripSong) BuildVocalStrip(m, vocalOwn);
-
-            // During a changeover the backing's own melody (the tune this instrumental was made for)
-            // is highlighted too, a step below the vocal singing over it: two melodies on one track.
-            backingSong = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.InstrumentalSong >= 0 &&
-                          !vocals.Contains(seg.InstrumentalSong) ? seg.InstrumentalSong : -1;
 
             // Melody styles.
             bool restyled = false;
@@ -382,7 +526,7 @@ namespace MusicHistory.Viewer
                 if (playing == l.Playing && backing == l.Backing) continue;
                 l.Playing = playing;
                 l.Backing = backing;
-                StyleLine(l);
+                if (!scrolling) StyleLine(l);
                 restyled = true;
             }
             if (restyled)
@@ -391,17 +535,31 @@ namespace MusicHistory.Viewer
                 foreach (LineView l in lines) if (!l.Playing && !l.Backing) { l.Glow.transform.SetAsLastSibling(); l.Line.transform.SetAsLastSibling(); }
                 foreach (LineView l in lines) if (l.Backing) { l.Glow.transform.SetAsLastSibling(); l.Line.transform.SetAsLastSibling(); }
                 foreach (LineView l in lines) if (l.Playing) { l.Glow.transform.SetAsLastSibling(); l.Line.transform.SetAsLastSibling(); }
-                RefreshLegend(m);
+                RefreshLegend();
+                windowDirty = true;
+            }
+
+            // Panning: shift the content under the fixed playhead; redraw it a few beats on.
+            double drift = 0;
+            if (scrolling)
+            {
+                drift = MelodyScroll.WrapNearest(beat - anchor, period);
+                if (windowDirty || Math.Abs(drift) * PixelsPerBeat > RedrawPixels)
+                {
+                    anchor = beat;
+                    drift = 0;
+                    BuildWindow();
+                }
+                PlaceContent(-(float)(drift * PixelsPerBeat));
             }
 
             // Playhead through the graph and the strips.
-            Rect plot = PlotArea;
-            float x = BeatX(beat);
+            Rect plot = Plot;
+            float x = scrolling ? ScrollHeadX : BeatX(beat);
             PlayheadX = x;
             UiKit.Place(playhead.rectTransform, x - 1f, plot.yMin - 4f, 2f, ChordTop + ChordStripHeight + 3f - (plot.yMin - 4f));
             UiKit.Place(playheadCap.rectTransform, x - 4f, plot.yMin - 8f, 8f, 8f);
-            int bar = m.BeatsPerBar > 0 ? (int)Math.Floor(beat / m.BeatsPerBar) + 1 : 1;
-            MashupChord? chord = inst >= 0 ? m.Songs[inst].ChordAt(beat) : null;
+            int bar = beatsPerBar > 0 ? (int)Math.Floor(beat / beatsPerBar) + 1 : 1;
             // The tag text changes once a bar or chord (no string per frame).
             string roman = chord != null ? chord.Roman : "";
             if (bar != tagBar || !ReferenceEquals(roman, tagRoman))
@@ -414,7 +572,19 @@ namespace MusicHistory.Viewer
             UiKit.Place(playheadTag.rectTransform, Mathf.Clamp(x - tagW / 2, plot.xMin, plot.xMax - tagW), plot.yMin - 18f, tagW, 13f);
             if (chord != null)
             {
-                float x0 = BeatX(chord.Start), x1 = BeatX(Math.Min(chord.End, m.PhraseBeats));
+                float x0, x1;
+                if (scrolling)
+                {
+                    // In content px around the anchor: the chord's stretch that holds the playhead.
+                    double here = anchor + drift;
+                    x0 = ContentX(here - (beat - chord.Start));
+                    x1 = ContentX(here + (Math.Min(chord.End, period) - beat));
+                }
+                else
+                {
+                    x0 = BeatX(chord.Start);
+                    x1 = BeatX(Math.Min(chord.End, period));
+                }
                 UiKit.Show(chordCurrent, true);
                 UiKit.Show(chordUnderline, true);
                 UiKit.Place(chordCurrent.rectTransform, x0, ChordTop, Mathf.Max(1f, x1 - x0), ChordStripHeight);
@@ -426,16 +596,16 @@ namespace MusicHistory.Viewer
                 UiKit.Show(chordUnderline, false);
             }
 
-            // A point of light on every playing melody, at this beat and the melody's pitch here
+            // A point of light on every playing melody, at the playhead and the melody's pitch there
             // (and a dimmer one on the backing's own melody during a changeover).
             bool tinted = false;
             foreach (DotView dot in dots)
             {
-                MashupSong song = m.Songs[dot.Song];
+                MashupSong song = songs[dot.Song];
                 float p = float.NaN;
                 bool v = false;
                 bool backing = dot.Song == backingSong;
-                bool on = (vocals.Contains(dot.Song) || backing) && song.PitchAt(beat, out p, out v);
+                bool on = (vocals.Contains(dot.Song) || backing) && PitchHere(dot.Song, song, beat, out p, out v);
                 dot.Active = on;
                 dot.Backing = on && backing;
                 UiKit.Show(dot.Core, on);
@@ -447,7 +617,7 @@ namespace MusicHistory.Viewer
                 }
                 dot.Voiced = v;
                 dot.Pitch = p;
-                Vector2 at = PanelPoint(beat, p);
+                Vector2 at = new(x, PitchY(p));
                 dot.Position = at;
                 float core = backing ? (v ? 5f : 4f) : v ? 7f : 5f;
                 float halo = backing ? (v ? 38f : 24f) : v ? 64f : 36f;
@@ -468,11 +638,26 @@ namespace MusicHistory.Viewer
             rig?.Sync(true, PixelScale(), false);
         }
 
+        /// <summary>
+        /// The pitch the light rides at: on a panning graph exactly the drawn line's (between its
+        /// points), else, in a breath, the melody's nearest sung pitch; on the static graph the
+        /// melody's own lookup, as before.
+        /// </summary>
+        bool PitchHere(int index, MashupSong song, double beat, out float pitch, out bool voiced)
+        {
+            if (scrolling && index < lines.Count && MelodyScroll.LineAt(lines[index].Sung, beat, period, out pitch))
+            {
+                voiced = true;
+                return true;
+            }
+            return song.PitchAt(beat, out pitch, out voiced);
+        }
+
         /// <summary>Screen pixels per reference pixel on the view camera (as the HUD's scale-with-screen-size).</summary>
         float PixelScale()
         {
             Camera? cam = loader != null ? loader.ViewCamera : null;
-            if (cam == null || loader.Hud == null) return 1f;
+            if (cam == null || loader == null || loader.Hud == null) return 1f;
             return loader.Hud.ScaleFor(cam.pixelWidth, cam.pixelHeight);
         }
 
@@ -488,22 +673,30 @@ namespace MusicHistory.Viewer
 
         // ------------------------------------------------------------------ geometry
 
+        /// <summary>The static graph's x of a phrase beat.</summary>
         float BeatX(double beat)
         {
-            Rect plot = PlotArea;
-            double p = shown != null && shown.PhraseBeats > 0 ? shown.PhraseBeats : 32;
+            Rect plot = Plot;
+            double p = period > 0 ? period : 32;
             return plot.xMin + (float)(Math.Max(0, Math.Min(p, beat)) / p) * plot.width;
         }
 
+        /// <summary>A panning graph's content x of unwrapped beat <paramref name="u"/> (the anchor sits under the playhead).</summary>
+        float ContentX(double u) => ScrollHeadX + (float)((u - anchor) * PixelsPerBeat);
+
         float PitchY(float pitch)
         {
-            Rect plot = PlotArea;
+            Rect plot = Plot;
             float u = Mathf.InverseLerp(pitchLo, pitchHi, pitch);
             return plot.yMax - u * plot.height;
         }
 
-        /// <summary>Where (phrase beat, pitch) sits on the panel (px from its top-left, y down).</summary>
-        public Vector2 PanelPoint(double beat, float pitch) => new(BeatX(beat), PitchY(pitch));
+        /// <summary>
+        /// Where (beat, pitch) sits on the panel (px from its top-left, y down): on the static graph
+        /// at its place in the phrase; on a panning graph relative to the playhead now (the nearest image).
+        /// </summary>
+        public Vector2 PanelPoint(double beat, float pitch) =>
+            new(scrolling ? (float)MelodyScroll.X(beat, PhraseBeat, period, PixelsPerBeat, ScrollHeadX) : BeatX(beat), PitchY(pitch));
 
         /// <summary>
         /// Screen position (pixels, origin bottom-left) of panel point <paramref name="p"/> on a
@@ -515,18 +708,45 @@ namespace MusicHistory.Viewer
             float left = width * .5f - PanelWidth * .5f * scale;
             // Where the panel actually sits (ViewerLayout raises it in the vertical layout).
             float bottom = (root != null ? panel.anchoredPosition.y : PanelBottom) * scale;
-            return new Vector2(left + p.x * scale, bottom + (PanelHeight - p.y) * scale);
+            return new Vector2(left + p.x * scale, bottom + (this.height - p.y) * scale);
         }
 
-        // ------------------------------------------------------------------ rebuild for a mashup
+        // ------------------------------------------------------------------ rebuild for a mix or a loop
 
-        void Rebuild(Mashup m)
+        void Rebuild(Mashup? m, DuetLoop? duet, bool portraitLayout)
         {
             shown = m;
+            shownDuet = duet;
+            portrait = portraitLayout;
+            scrolling = duet != null || portraitLayout;
+            height = HeightFor(portrait);
             tagBar = -1;
             stripSong = -2;
             vocalStripSong = -2;
-            if (m.PitchRange(out float lo, out float hi))
+            stripChords = vocalChords = null;
+            backingSong = -1;
+            songs.Clear();
+            if (duet != null)
+            {
+                foreach (DuetSong s in duet.Songs) songs.Add(s.Line);
+                period = duet.LoopBeats > 0 ? duet.LoopBeats : 32;
+                phraseBeats = duet.PhraseBeats > 0 ? duet.PhraseBeats : 32;
+                beatsPerBar = Math.Max(1, duet.BeatsPerBar);
+            }
+            else if (m != null)
+            {
+                songs.AddRange(m.Songs);
+                period = phraseBeats = m.PhraseBeats > 0 ? m.PhraseBeats : 32;
+                beatsPerBar = Math.Max(1, m.BeatsPerBar);
+            }
+            LayoutChrome();
+            Rect plot = Plot;
+            // Landscape: the whole phrase across the plot. Panning: the same scale (one phrase per
+            // plot width), three times larger in portrait.
+            PixelsPerBeat = (float)(plot.width / phraseBeats) * (portrait ? PortraitScale : 1f);
+
+            bool any = duet != null ? duet.PitchRange(out float lo, out float hi) : m!.PitchRange(out lo, out hi);
+            if (any)
             {
                 lo = Mathf.Floor(lo - 1.5f);
                 hi = Mathf.Ceil(hi + 1.5f);
@@ -544,8 +764,18 @@ namespace MusicHistory.Viewer
             }
             pitchLo = lo;
             pitchHi = hi;
-            UiKit.SetText(subtitle, $"{m.Bars} bar{(m.Bars == 1 ? "" : "s")} · {m.BeatsPerBar}/4 · in C major / A minor");
-            BuildGrid(m);
+            if (duet != null)
+            {
+                UiKit.SetText(kicker, "DUET MELODIES");
+                UiKit.SetText(subtitle, $"loop of {duet.LoopBars} bars · {GraphHud.Esc(duet.Key)} · {duet.Bpm.ToString("0.#", CultureInfo.InvariantCulture)} BPM · in C major / A minor");
+            }
+            else
+            {
+                UiKit.SetText(kicker, "MELODY GRAPH");
+                UiKit.SetText(subtitle, $"{m!.Bars} bar{(m.Bars == 1 ? "" : "s")} · {m.BeatsPerBar}/4 · in C major / A minor");
+            }
+            UiKit.Place(subtitle.rectTransform, duet != null ? 190 : 160, 11, duet != null ? 330 : 300, 20);
+            BuildGrid();
 
             foreach (LineView l in lines)
             {
@@ -560,40 +790,54 @@ namespace MusicHistory.Viewer
             }
             dots.Clear();
             bool anyVoiced = false;
-            for (int i = 0; i < m.Songs.Count; i++)
+            for (int i = 0; i < songs.Count; i++)
             {
-                MashupSong song = m.Songs[i];
+                MashupSong song = songs[i];
                 LineView l = new() { Song = i };
                 l.Glow = Shapes($"Glow {i + 1}", linesRoot);
                 l.Line = Shapes($"Melody {i + 1} {song.WorkId}", linesRoot);
                 l.Glow.Feather = 6f;
                 l.Line.Feather = 1.1f;
-                List<Vector2>? piece = null;
-                double lastBeat = double.NegativeInfinity;
-                foreach (MelodyPoint p in song.Melody)
+                IReadOnlyList<MelodyPoint> sung = duet != null ? duet.Songs[i].Melody : song.Melody;
+                foreach (MelodyPoint p in sung)
+                    if (p.Voiced)
+                    {
+                        anyVoiced = true;
+                        break;
+                    }
+                if (scrolling)
                 {
-                    if (!p.Voiced)
-                    {
-                        piece = null;
-                        continue;
-                    }
-                    anyVoiced = true;
-                    // A new piece after a gap, and where the window wraps past the phrase's end back to its start.
-                    if (piece == null || p.Beat - lastBeat > MashupSong.MaxGapBeats || p.Beat < lastBeat)
-                    {
-                        piece = new List<Vector2>();
-                        l.Pieces.Add(piece);
-                    }
-                    Vector2 at = PanelPoint(p.Beat, p.Pitch);
-                    piece.Add(at);
-                    l.Points.Add(at);
-                    lastBeat = p.Beat;
+                    // Pieces in unwrapped beats; drawn per window (BuildWindow).
+                    l.Sung = MelodyScroll.Pieces(sung, period, duet != null, MashupSong.MaxGapBeats);
                 }
-                // A lone point still shows: a tiny dash.
-                foreach (List<Vector2> pc in l.Pieces)
-                    if (pc.Count == 1) pc.Add(pc[0] + new Vector2(2f, 0f));
+                else
+                {
+                    List<Vector2>? piece = null;
+                    double lastBeat = double.NegativeInfinity;
+                    foreach (MelodyPoint p in song.Melody)
+                    {
+                        if (!p.Voiced)
+                        {
+                            piece = null;
+                            continue;
+                        }
+                        // A new piece after a gap, and where the window wraps past the phrase's end back to its start.
+                        if (piece == null || p.Beat - lastBeat > MashupSong.MaxGapBeats || p.Beat < lastBeat)
+                        {
+                            piece = new List<Vector2>();
+                            l.Pieces.Add(piece);
+                        }
+                        Vector2 at = PanelPoint(p.Beat, p.Pitch);
+                        piece.Add(at);
+                        l.Points.Add(at);
+                        lastBeat = p.Beat;
+                    }
+                    // A lone point still shows: a tiny dash.
+                    foreach (List<Vector2> pc in l.Pieces)
+                        if (pc.Count == 1) pc.Add(pc[0] + new Vector2(2f, 0f));
+                }
                 l.Playing = false;
-                StyleLine(l);
+                if (!scrolling) StyleLine(l);
                 lines.Add(l);
 
                 DotView d = new() { Song = i };
@@ -607,27 +851,39 @@ namespace MusicHistory.Viewer
                 UiKit.Show(d.Halo, false);
                 dots.Add(d);
             }
-            rig?.EnsureLights(m.Songs.Count);
+            rig?.EnsureLights(songs.Count);
             UiKit.Show(emptyText, !anyVoiced);
-            BuildLegend(m);
-            RefreshLegend(m);
+            if (!scrolling)
+            {
+                bars.Clear();
+                BuildStaticBars();
+            }
+            BuildLegend();
+            RefreshLegend();
+            windowDirty = true;
+            anchor = 0;
         }
 
         void StyleLine(LineView l)
         {
-            Color bright = BrightColor(l.Song);
-            l.Color = l.Playing ? bright : l.Backing ? BackingColor(l.Song) : MutedSongColor(l.Song);
-            l.Width = l.Playing ? 3.2f : l.Backing ? 2.3f : 1.6f;
+            l.Color = LineColor(l);
+            l.Width = LineWidth(l);
             l.Line.Clear();
             l.Glow.Clear();
-            foreach (List<Vector2> piece in l.Pieces)
-            {
-                l.Line.AddPolyline(piece, l.Width, l.Color);
-                if (l.Playing) l.Glow.AddPolyline(piece, 4f, new Color(bright.r, bright.g, bright.b, .22f));
-                else if (l.Backing) l.Glow.AddPolyline(piece, 3f, new Color(bright.r, bright.g, bright.b, .10f));
-            }
+            foreach (List<Vector2> piece in l.Pieces) AddStyled(l, piece);
             l.Line.Commit();
             l.Glow.Commit();
+        }
+
+        static Color LineColor(LineView l) => l.Playing ? BrightColor(l.Song) : l.Backing ? BackingColor(l.Song) : MutedSongColor(l.Song);
+        static float LineWidth(LineView l) => l.Playing ? 3.2f : l.Backing ? 2.3f : 1.6f;
+
+        static void AddStyled(LineView l, IReadOnlyList<Vector2> piece)
+        {
+            Color bright = BrightColor(l.Song);
+            l.Line.AddPolyline(piece, l.Width, l.Color);
+            if (l.Playing) l.Glow.AddPolyline(piece, 4f, new Color(bright.r, bright.g, bright.b, .22f));
+            else if (l.Backing) l.Glow.AddPolyline(piece, 3f, new Color(bright.r, bright.g, bright.b, .10f));
         }
 
         static readonly int[] WhiteKeys = { 0, 2, 4, 5, 7, 9, 11 };
@@ -635,9 +891,10 @@ namespace MusicHistory.Viewer
 
         public static string NoteName(int midi) => PitchNames[((midi % 12) + 12) % 12] + (midi / 12 - 1).ToString(CultureInfo.InvariantCulture);
 
-        void BuildGrid(Mashup m)
+        /// <summary>The fixed part of the grid: the plot's ground, the pitch lines and their note names.</summary>
+        void BuildGrid()
         {
-            Rect plot = PlotArea;
+            Rect plot = Plot;
             grid.Clear();
             // Plot ground, slightly lifted from the sheet.
             grid.AddRect(plot.xMin, plot.yMin, plot.width, plot.height, new Color(1, 1, 1, .018f));
@@ -659,17 +916,23 @@ namespace MusicHistory.Viewer
                 UiKit.Place(t.rectTransform, 6, y - 7f, PlotLeft - 14f, 14f);
             }
             for (int i = label; i < pitchLabels.Count; i++) UiKit.Show(pitchLabels[i], false);
-            // Bar lines (the phrase's first and last stronger), beat ticks along the top.
-            int bpb = Math.Max(1, m.BeatsPerBar);
-            for (int b = 0; b <= Math.Round(m.PhraseBeats); b++)
+            grid.Commit();
+        }
+
+        /// <summary>The static graph's bar lines (the phrase's first and last stronger) and beat ticks along the top.</summary>
+        void BuildStaticBars()
+        {
+            Rect plot = Plot;
+            int bpb = Math.Max(1, beatsPerBar);
+            for (int b = 0; b <= Math.Round(period); b++)
             {
                 float x = BeatX(b);
                 bool barLine = b % bpb == 0;
-                bool edge = b == 0 || b >= m.PhraseBeats - 1e-6;
-                if (barLine) grid.AddRect(x - .5f, plot.yMin, 1f, ChordTop + ChordStripHeight - plot.yMin, new Color(1, 1, 1, edge ? .16f : .07f));
-                else grid.AddRect(x - .5f, plot.yMax - 4f, 1f, 4f, new Color(1, 1, 1, .08f));
+                bool edge = b == 0 || b >= period - 1e-6;
+                if (barLine) bars.AddRect(x - .5f, plot.yMin, 1f, ChordTop + ChordStripHeight - plot.yMin, new Color(1, 1, 1, edge ? .16f : .07f));
+                else bars.AddRect(x - .5f, plot.yMax - 4f, 1f, 4f, new Color(1, 1, 1, .08f));
             }
-            grid.Commit();
+            bars.Commit();
         }
 
         TextMeshProUGUI PitchLabel(int i)
@@ -684,67 +947,187 @@ namespace MusicHistory.Viewer
         TextMeshProUGUI RomanLabel(int i)
         {
             while (romanLabels.Count <= i)
-                romanLabels.Add(UiKit.Text($"Chord {romanLabels.Count + 1}", panel, 13, TextColor, TextAlignmentOptions.Center, bold: true));
+                romanLabels.Add(UiKit.Text($"Chord {romanLabels.Count + 1}", content, 13, TextColor, TextAlignmentOptions.Center, bold: true));
             TextMeshProUGUI t = romanLabels[i];
             UiKit.Show(t, true);
             return t;
         }
 
-        /// <summary>Colour of a chord cell: the key palette (circle-of-fifths hue, minor darker) at its root.</summary>
-        public static Color ChordColor(MashupChord c) => SongPalette.KeyColor(c.RootPc, c.Minor);
+        /// <summary>Colour of a chord cell: the shared chord palette (<see cref="ChordPalette"/>, also the chord ring's).</summary>
+        public static Color ChordColor(MashupChord c) => ChordPalette.Of(c);
 
-        void BuildChordStrip(Mashup m, int song)
+        void SetStrip(int song, IReadOnlyList<MashupChord>? chords)
         {
             stripSong = song;
+            stripChords = chords;
+            if (scrolling) windowDirty = true;
+            else BuildChordStrip();
+        }
+
+        void SetVocalStrip(int song, IReadOnlyList<MashupChord>? chords)
+        {
+            vocalStripSong = song;
+            vocalChords = chords;
+            UiKit.Show(vocalLabel, song >= 0);
+            if (scrolling) windowDirty = true;
+            else BuildVocalStrip();
+        }
+
+        void BuildChordStrip()
+        {
             chordStrip.Clear();
-            Rect area = ChordArea;
+            Rect area = ChordRect;
             chordStrip.AddRect(area.xMin, area.yMin, area.width, area.height, new Color(1, 1, 1, .05f));
             int label = 0;
-            if (song >= 0)
-            {
-                foreach (MashupChord c in m.Songs[song].Chords)
-                {
-                    float x0 = BeatX(c.Start), x1 = BeatX(Math.Min(c.End, m.PhraseBeats));
-                    if (x1 - x0 < .5f) continue;
-                    Color col = ChordColor(c);
-                    Color top = Color.Lerp(col, Color.white, .08f), bottom = Color.Lerp(col, Color.black, .18f);
-                    top.a = bottom.a = .95f;
-                    // A hairline between neighbouring cells.
-                    chordStrip.AddGradientRect(x0 + .5f, area.yMin, Mathf.Max(.5f, x1 - x0 - 1f), area.height, top, bottom);
-                    if (x1 - x0 < 18f || c.Roman.Length == 0) continue;
-                    TextMeshProUGUI t = RomanLabel(label++);
-                    t.text = GraphHud.Esc(c.Roman);
-                    float lum = .299f * col.r + .587f * col.g + .114f * col.b;
-                    t.color = lum > .55f ? new Color(.06f, .07f, .08f, .92f) : new Color(1, 1, 1, .95f);
-                    UiKit.Place(t.rectTransform, x0, area.yMin, x1 - x0, area.height);
-                }
-            }
+            if (stripChords != null)
+                foreach (MashupChord c in stripChords)
+                    label = AddChordCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)), label);
             for (int i = label; i < romanLabels.Count; i++) UiKit.Show(romanLabels[i], false);
             chordStrip.Commit();
         }
 
-        void BuildVocalStrip(Mashup m, int song)
+        /// <summary>One chord cell between x0 and x1 (content px), with its roman numeral when it is wide enough.</summary>
+        int AddChordCell(MashupChord c, float x0, float x1, int label)
         {
-            vocalStripSong = song;
+            if (x1 - x0 < .5f) return label;
+            Rect area = ChordRect;
+            Color col = ChordColor(c);
+            Color top = Color.Lerp(col, Color.white, .08f), bottom = Color.Lerp(col, Color.black, .18f);
+            top.a = bottom.a = .95f;
+            // A hairline between neighbouring cells.
+            chordStrip.AddGradientRect(x0 + .5f, area.yMin, Mathf.Max(.5f, x1 - x0 - 1f), area.height, top, bottom);
+            if (x1 - x0 < 18f || c.Roman.Length == 0) return label;
+            TextMeshProUGUI t = RomanLabel(label++);
+            UiKit.SetText(t, GraphHud.Esc(c.Roman));
+            t.color = ChordPalette.LabelOn(col);
+            UiKit.Place(t.rectTransform, x0, area.yMin, x1 - x0, area.height);
+            return label;
+        }
+
+        void BuildVocalStrip()
+        {
             vocalStrip.Clear();
-            UiKit.Show(vocalLabel, song >= 0);
-            if (song >= 0)
-            {
-                foreach (MashupChord c in m.Songs[song].Chords)
-                {
-                    float x0 = BeatX(c.Start), x1 = BeatX(Math.Min(c.End, m.PhraseBeats));
-                    if (x1 - x0 < .5f) continue;
-                    Color col = ChordColor(c);
-                    col.a = .9f;
-                    vocalStrip.AddRect(x0 + .5f, VocalTop, Mathf.Max(.5f, x1 - x0 - 1f), VocalStripHeight, col);
-                }
-            }
+            if (vocalChords != null)
+                foreach (MashupChord c in vocalChords)
+                    AddVocalCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)));
             vocalStrip.Commit();
         }
 
-        void BuildLegend(Mashup m)
+        void AddVocalCell(MashupChord c, float x0, float x1)
         {
-            while (legend.Count < m.Songs.Count)
+            if (x1 - x0 < .5f) return;
+            Color col = ChordColor(c);
+            col.a = .9f;
+            vocalStrip.AddRect(x0 + .5f, VocalTop, Mathf.Max(.5f, x1 - x0 - 1f), VocalStripHeight, col);
+        }
+
+        // ------------------------------------------------------------------ the panning window
+
+        /// <summary>
+        /// Draws everything that moves with the beat, in content px around <see cref="anchor"/>, for
+        /// the plot's width plus a margin each side: bar lines, the chord strips, every melody (each
+        /// sung piece at every image u + k·P that reaches the window).
+        /// </summary>
+        void BuildWindow()
+        {
+            windowDirty = false;
+            WindowBuilds++;
+            Rect plot = Plot;
+            double ppb = Math.Max(1e-3, PixelsPerBeat);
+            double margin = RedrawPixels / ppb + 1;
+            double lo = anchor - (ScrollHeadX - plot.xMin) / ppb - margin;
+            double hi = anchor + (plot.xMax - ScrollHeadX) / ppb + margin;
+            double p = period > 0 ? period : 32;
+
+            // Bar lines and beat ticks; the phrase's / the loop's start stronger.
+            bars.Clear();
+            int bpb = Math.Max(1, beatsPerBar);
+            int beatsInPeriod = (int)Math.Ceiling(p - 1e-6);
+            (int k0, int k1) = MelodyScroll.Images(0, p, lo, hi, p);
+            for (int k = k0; k <= k1; k++)
+                for (int q = 0; q < beatsInPeriod; q++)
+                {
+                    double u = q + k * p;
+                    if (u < lo || u > hi) continue;
+                    float x = ContentX(u);
+                    if (q % bpb == 0)
+                    {
+                        bool edge = q == 0;
+                        bars.AddRect(x - (edge ? 1f : .5f), plot.yMin, edge ? 2f : 1f, ChordTop + ChordStripHeight - plot.yMin, new Color(1, 1, 1, edge ? (shownDuet != null ? .3f : .16f) : .07f));
+                    }
+                    else bars.AddRect(x - .5f, plot.yMax - 4f, 1f, 4f, new Color(1, 1, 1, .08f));
+                }
+            bars.Commit();
+
+            // Chord strips.
+            chordStrip.Clear();
+            Rect area = ChordRect;
+            chordStrip.AddRect(ContentX(lo), area.yMin, ContentX(hi) - ContentX(lo), area.height, new Color(1, 1, 1, .05f));
+            int label = 0;
+            vocalStrip.Clear();
+            foreach ((IReadOnlyList<MashupChord>? list, bool vocal) in new[] { (stripChords, false), (vocalChords, true) })
+            {
+                if (list == null) continue;
+                foreach (MashupChord c in list)
+                {
+                    double end = Math.Min(c.End, p);
+                    (int a, int b) = MelodyScroll.Images(c.Start, end, lo, hi, p);
+                    for (int k = a; k <= b; k++)
+                    {
+                        float x0 = ContentX(Math.Max(lo, c.Start + k * p)), x1 = ContentX(Math.Min(hi, end + k * p));
+                        if (vocal) AddVocalCell(c, x0, x1);
+                        else label = AddChordCell(c, x0, x1, label);
+                    }
+                }
+            }
+            for (int i = label; i < romanLabels.Count; i++) UiKit.Show(romanLabels[i], false);
+            chordStrip.Commit();
+            vocalStrip.Commit();
+
+            // Melodies.
+            foreach (LineView l in lines)
+            {
+                l.Color = LineColor(l);
+                l.Width = LineWidth(l);
+                l.Line.Clear();
+                l.Glow.Clear();
+                l.Points.Clear();
+                l.Pieces.Clear();
+                foreach (MelodyScroll.Piece piece in l.Sung)
+                {
+                    (int a, int b) = MelodyScroll.Images(piece.First, piece.Last, lo, hi, p);
+                    for (int k = a; k <= b; k++)
+                    {
+                        scratch.Clear();
+                        double shift = k * p;
+                        for (int i = 0; i < piece.Count; i++)
+                        {
+                            double u = piece.Beats[i] + shift;
+                            // The points in the window, and one beyond each edge so the line runs out of it.
+                            bool inside = u >= lo && u <= hi;
+                            bool nextInside = i + 1 < piece.Count && piece.Beats[i + 1] + shift >= lo;
+                            bool previousInside = i > 0 && piece.Beats[i - 1] + shift <= hi;
+                            if (!inside && !(u < lo && nextInside) && !(u > hi && previousInside)) continue;
+                            scratch.Add(new Vector2(ContentX(u), PitchY(piece.Pitches[i])));
+                        }
+                        if (scratch.Count == 0) continue;
+                        if (scratch.Count == 1) scratch.Add(scratch[0] + new Vector2(2f, 0f));   // a lone point: a tiny dash
+                        List<Vector2> drawn = new(scratch);
+                        l.Pieces.Add(drawn);
+                        l.Points.AddRange(drawn);
+                        AddStyled(l, drawn);
+                    }
+                }
+                l.Line.Commit();
+                l.Glow.Commit();
+            }
+        }
+
+        // ------------------------------------------------------------------ legend
+
+        void BuildLegend()
+        {
+            while (legend.Count < songs.Count)
             {
                 Image swatch = UiKit.Image($"Legend Swatch {legend.Count + 1}", panel, Color.white, 1);
                 TextMeshProUGUI text = UiKit.Text($"Legend {legend.Count + 1}", panel, 13, MutedColor);
@@ -752,27 +1135,27 @@ namespace MusicHistory.Viewer
             }
             for (int i = 0; i < legend.Count; i++)
             {
-                bool on = i < m.Songs.Count;
+                bool on = i < songs.Count;
                 UiKit.Show(legend[i].swatch, on);
                 UiKit.Show(legend[i].text, on);
             }
         }
 
-        void RefreshLegend(Mashup m)
+        void RefreshLegend()
         {
             // Right-aligned on the title row: "▬ 1974 No Woman, No Cry", the playing ones bright.
-            float right = PanelWidth - 20f, left = 470f, gap = 22f;
+            float right = PanelWidth - 20f, left = shownDuet != null ? 530f : 470f, gap = 22f;
             float size = 13f;
             List<float> widths = new();
             for (int pass = 0; pass < 3; pass++)
             {
                 widths.Clear();
                 float total = 0;
-                for (int i = 0; i < m.Songs.Count; i++)
+                for (int i = 0; i < songs.Count; i++)
                 {
                     TextMeshProUGUI t = legend[i].text;
                     t.fontSize = size;
-                    t.text = LegendEntry(m.Songs[i], lines.Count > i && lines[i].Playing, lines.Count > i && lines[i].Backing);
+                    t.text = LegendEntry(songs[i], lines.Count > i && lines[i].Playing, lines.Count > i && lines[i].Backing);
                     float w = Mathf.Min(260f, t.GetPreferredValues(t.text, 2000, 0).x) + 22f;
                     widths.Add(w);
                     total += w + (i > 0 ? gap : 0);
@@ -781,7 +1164,7 @@ namespace MusicHistory.Viewer
                 size -= 1f;
             }
             float x = right;
-            for (int i = m.Songs.Count - 1; i >= 0; i--)
+            for (int i = songs.Count - 1; i >= 0; i--)
             {
                 (Image swatch, TextMeshProUGUI text) = legend[i];
                 bool playing = lines.Count > i && lines[i].Playing;
