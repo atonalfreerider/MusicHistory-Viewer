@@ -10,8 +10,8 @@ using UnityEngine.UI;
 namespace MusicHistory.Viewer
 {
     /// <summary>
-    /// Screen overlay: legend + controls (top left; hidden while a featured path plays, when the
-    /// path's name takes its place in large outlined type), the focused song's chord wheel (no panel,
+    /// Screen overlay: legend + controls (top left; hidden while a featured path or a melody mosaic
+    /// plays, when its name takes its place in large outlined type), the focused song's chord wheel (no panel,
     /// no text but the chord names: <see cref="ChordRingView"/> — the song's main loop, or while a mix
     /// or a duet loop plays the progression heard, with a hand at the music's place and the chord
     /// sounding lit; <see cref="ViewerLayout"/> puts it top right in landscape, top centre in
@@ -218,7 +218,7 @@ namespace MusicHistory.Viewer
 
         void RefreshLegend()
         {
-            pathPlaying = PlayingPath() != null;
+            pathPlaying = PlayingPath() != null || PlayingMosaic() != null;
             bool lineage = loader != null && loader.Data != null && loader.Data.IsIdentityLineage;
             string help = HelpVisible
                 ? (lineage
@@ -227,9 +227,10 @@ namespace MusicHistory.Viewer
                   $"\n<color={Muted}>Move</color>  W A S D, Q E (Shift = fast) · R reset view · L all labels · V secondary edges · F live layout (time locked) · T lyric themes" +
                   $"\n<color={Muted}>Walkthrough</color>  1 lineage · 2 subtree · 3 chronological{(lineage ? " · 4 family" : "")} · M next mode · Enter start · Space pause · N/→ next · B/← back · Esc exit · C compare in C / 120 BPM" +
                   $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back · M melody graph (mashup mixes) · N captions on/off (narrated paths: on-screen text, no voiceover)" +
-                  $"\n<color={Muted}>Duet loops</color>  K plays the selected path's duet loop (two voices at all times, no narration) · while a path plays, K switches between its duet loop and its narrated mix · ←/→ previous / next pair"
-                : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths";
-            // A playing featured path's name takes the legend's place.
+                  $"\n<color={Muted}>Duet loops</color>  K plays the selected path's duet loop (two voices at all times, no narration) · while a path plays, K switches between its duet loop and its narrated mix · ←/→ previous / next pair" +
+                  $"\n<color={Muted}>Melody mosaics</color>  O opens the mosaics (one melody rebuilt from other songs' melodies, then harmonized; no narration) · ↑↓ or 1–9 choose · Enter plays · ←/→ previous / next loop · a section chip jumps there · O again back to the paths"
+                : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths · <color={Muted}>O</color> melody mosaics";
+            // A playing featured path's (or mosaic's) name takes the legend's place.
             SetText(legend, legendHidden || pathPlaying ? "" : legendBody + help);
         }
 
@@ -319,6 +320,19 @@ namespace MusicHistory.Viewer
         {
             if (cardSong == null || ring == null) return;
             Walkthrough.WalkthroughDirector? d = loader != null ? loader.Director : null;
+            if (d != null && d.CurrentMosaic is Playback.Mosaic mosaic)
+            {
+                // The target loop's chords, one loop round the wheel; the hand at the loop beat.
+                double loop = mosaic.LoopBeats > 0 ? mosaic.LoopBeats : 16;
+                if (!ReferenceEquals(ringSource, mosaic))
+                {
+                    ringSource = mosaic;
+                    ringPhrase = -1;
+                    ring.Set(ChordRingView.Window(mosaic.Chords, 0, loop), loop, ChordKey.TonicOf(mosaic.Chords, mosaic.Key), mosaic);
+                }
+                Point(mosaic.LoopBeatAt(d.MosaicSeconds));
+                return;
+            }
             if (d != null && d.CurrentDuet is Playback.DuetLoop l)
             {
                 double phrase = Math.Max(1, Math.Min(l.PhraseBeats > 0 ? l.PhraseBeats : 32, l.LoopBeats > 0 ? l.LoopBeats : 32));
@@ -386,14 +400,27 @@ namespace MusicHistory.Viewer
             return d != null && d.IsTouring && d.Mode == Walkthrough.TourMode.Path ? d.CurrentPath : null;
         }
 
-        /// <summary>The playing featured path's name ("Aeolian Rock"), shown top left; the legend hides meanwhile (the layout calls it first, so it lays out the HUD as it will show).</summary>
+        /// <summary>The melody mosaic playing, else null.</summary>
+        Playback.Mosaic? PlayingMosaic()
+        {
+            Walkthrough.WalkthroughDirector? d = loader != null ? loader.Director : null;
+            return d != null ? d.CurrentMosaic : null;
+        }
+
+        /// <summary>The name of the path or mosaic playing ("" when none).</summary>
+        string PlayingName()
+        {
+            if (PlayingPath() is Playback.FeaturedPath path) return path.DisplayName;
+            return PlayingMosaic() is Playback.Mosaic m ? (m.Name.Length > 0 ? m.Name : Playback.PathCatalog.TitleCase(m.Id)) : "";
+        }
+
+        /// <summary>The playing featured path's (or melody mosaic's) name ("Aeolian Rock"), shown top left; the legend hides meanwhile (the layout calls it first, so it lays out the HUD as it will show).</summary>
         public void RefreshPathTitle()
         {
             if (pathTitle == null) return;
-            Playback.FeaturedPath? path = PlayingPath();
-            bool playing = path != null;
+            bool playing = PlayingPath() != null || PlayingMosaic() != null;
             if (playing != pathPlaying) RefreshLegend();
-            string text = path != null ? path.DisplayName : "";
+            string text = playing ? PlayingName() : "";
             if (text != pathTitleText)
             {
                 pathTitleText = text;

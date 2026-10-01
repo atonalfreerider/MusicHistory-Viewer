@@ -35,6 +35,10 @@ namespace MusicHistory.Viewer
     /// <item>A duet loop, either layout: a timeline of mix beats panning the same way and wrapping
     /// seamlessly at the loop point (portrait again three times larger); the two singing melodies
     /// bright with their lights, the chord strip the bed's chords.</item>
+    /// <item>A melody mosaic, either layout: a timeline of the mix's beats, loop after loop, panning
+    /// the same way (one loop per plot width in landscape, three times larger in portrait); the
+    /// target's melody, the pieces as coloured spans labelled by song, the harmony voices (see
+    /// MelodyGraphPanel.Mosaic.cs).</item>
     /// </list>
     /// A panning graph is drawn into a masked content strip around an anchor beat and only shifted
     /// per frame; it is redrawn when the playhead has moved a few beats from the anchor.
@@ -45,7 +49,7 @@ namespace MusicHistory.Viewer
     /// a dedicated camera renders with its own bloom into a texture, added onto the panel exactly
     /// where the lights ride (the graph's own bloom and look are untouched).
     /// </summary>
-    public sealed class MelodyGraphPanel : MonoBehaviour
+    public sealed partial class MelodyGraphPanel : MonoBehaviour
     {
         public const float PanelWidth = 1240f;
         /// <summary>Height of the landscape panel.</summary>
@@ -131,6 +135,8 @@ namespace MusicHistory.Viewer
             public readonly List<List<Vector2>> Pieces = new();
             /// <summary>The melody in unwrapped beats (panning graphs).</summary>
             public List<MelodyScroll.Piece> Sung = new();
+            /// <summary>A melody mosaic's line: which voice in which loop (null otherwise).</summary>
+            public MosaicTimeline.LineSpec? MosaicLine;
         }
 
         /// <summary>A point of light riding on a playing melody.</summary>
@@ -148,6 +154,8 @@ namespace MusicHistory.Viewer
             /// <summary>Centre in panel px (y down).</summary>
             public Vector2 Position;
             public float Pitch;
+            /// <summary>A melody mosaic's light: the index into <see cref="Lines"/> of the line it rides (-1 when off or otherwise).</summary>
+            public int Line = -1;
         }
 
         SongGraphLoader loader = null!;
@@ -356,6 +364,7 @@ namespace MusicHistory.Viewer
             mask = viewport.gameObject.AddComponent<RectMask2D>();
             content = UiKit.Rect("Content", viewport);
             bars = Shapes("Bar Lines", content);
+            BuildMosaicLayers();
             chordStrip = Shapes("Chord Strip", content);
             vocalStrip = Shapes("Vocal Chord Strip", content);
             chordCurrent = UiKit.Image("Current Chord", content, new Color(1, 1, 1, .16f));
@@ -403,6 +412,7 @@ namespace MusicHistory.Viewer
             panel.sizeDelta = new Vector2(PanelWidth, height);
             Rect plot = Plot;
             foreach (UiShapes s in new[] { grid, bars, chordStrip, vocalStrip }) UiKit.Place(s.rectTransform, 0, 0, PanelWidth, height);
+            LayoutMosaicLayers();
             UiKit.Place(linesRoot, 0, 0, PanelWidth, height);
             UiKit.Place(dotsRoot, 0, 0, PanelWidth, height);
             foreach (LineView l in lines)
@@ -466,6 +476,7 @@ namespace MusicHistory.Viewer
             canvas = null;
             shown = null;
             shownDuet = null;
+            ForgetMosaic();
             songs.Clear();
             lines.Clear();
             dots.Clear();
@@ -506,11 +517,17 @@ namespace MusicHistory.Viewer
             WalkthroughDirector? d = loader.Director;
             Mashup? m = d != null ? d.CurrentMashup : null;
             DuetLoop? duet = d != null ? d.CurrentDuet : null;
-            bool show = (m != null || duet != null) && UserVisible;
+            Mosaic? mosaic = d != null ? d.CurrentMosaic : null;
+            bool show = (m != null || duet != null || mosaic != null) && UserVisible;
             if (root.gameObject.activeSelf != show) root.gameObject.SetActive(show);
             if (!show || d == null)
             {
                 rig?.Sync(false, 1f, false);
+                return;
+            }
+            if (mosaic != null)
+            {
+                RefreshMosaic(d, mosaic);
                 return;
             }
             AttachCamera();
@@ -779,6 +796,7 @@ namespace MusicHistory.Viewer
         {
             shown = m;
             shownDuet = duet;
+            ForgetMosaic();
             portrait = portraitLayout;
             scrolling = duet != null || portraitLayout;
             height = HeightFor(portrait);

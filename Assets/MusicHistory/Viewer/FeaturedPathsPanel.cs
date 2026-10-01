@@ -40,8 +40,15 @@ namespace MusicHistory.Viewer
     /// Duet / Mix button). The strip then reads "Duet: A + B over &lt;root&gt;", the key, BPM, chord
     /// match and "LOOP n" with the position in the loop; both singers' chips are marked VOCAL, the
     /// root's BED and, during a handoff, the borrowed instrumental's.
+    ///
+    /// The melody mosaics (DESIGN.md §17) have a list of their own in the same panel: O opens it (or
+    /// switches the open list between the paths and the mosaics; the header's Mosaics / Paths button
+    /// too). Each row shows the mosaic's name, its target song and how many songs rebuild it; Enter,
+    /// a click or the Play button plays it. The strip then reads "Mosaic: &lt;target&gt; rebuilt from
+    /// N songs", the section chips (original, mosaic, harmony; a click jumps there), LOOP k / n,
+    /// what is heard, coverage and match (see FeaturedPathsPanel.Mosaics.cs).
     /// </summary>
-    public sealed class FeaturedPathsPanel : MonoBehaviour
+    public sealed partial class FeaturedPathsPanel : MonoBehaviour
     {
         public enum PanelState { Closed, List, Playing }
 
@@ -160,6 +167,7 @@ namespace MusicHistory.Viewer
         {
             get
             {
+                if (Tab == ListTab.Mosaics) return MosaicListText;
                 StringBuilder b = new();
                 foreach (RowView r in rows)
                 {
@@ -236,6 +244,7 @@ namespace MusicHistory.Viewer
             buttonIcon.Clear();
             paths.Clear();
             paths.AddRange(owner.Catalog.Paths);
+            ResetMosaics(owner);
             State = PanelState.Closed;
             Hovered = -1;
             Selected = paths.Count > 0 ? Math.Max(0, paths.FindIndex(p => p.IsPlayable)) : -1;
@@ -252,6 +261,7 @@ namespace MusicHistory.Viewer
             EnsureEventSystem();
             BuildButton();
             BuildList();
+            BuildMosaicList();
             BuildStrip();
             owner.Hud.ExtraPanels = VisibleRects;
 
@@ -334,7 +344,7 @@ namespace MusicHistory.Viewer
             b.onClick.AddListener(() =>
             {
                 Deselect();
-                if (State == PanelState.Closed) Open();
+                if (State == PanelState.Closed) OpenTab(ListTab.Paths);
                 else if (State == PanelState.List) Close();
                 else StopTour();
             });
@@ -585,6 +595,8 @@ namespace MusicHistory.Viewer
 
             int maxSteps = 0;
             foreach (FeaturedPath p in paths) maxSteps = Math.Max(maxSteps, p.Steps.Count);
+            // A mosaic's chips are its three sections.
+            if (mosaics.Count > 0) maxSteps = Math.Max(maxSteps, 3);
             for (int i = 0; i < maxSteps; i++)
             {
                 if (i > 0)
@@ -730,7 +742,7 @@ namespace MusicHistory.Viewer
 
         public void Toggle()
         {
-            if (State == PanelState.Closed) Open();
+            if (State == PanelState.Closed) OpenTab(ListTab.Paths);
             else if (State == PanelState.List) Close();
             else StopTour();
         }
@@ -741,7 +753,7 @@ namespace MusicHistory.Viewer
             if (State == PanelState.List) return;
             if (Director.IsTouring)
             {
-                bool wasPath = Director.Mode == TourMode.Path;
+                bool wasPath = Director.Mode == TourMode.Path || Director.Mode == TourMode.Mosaic;
                 Director.Exit();   // TourChanged: a path tour returns to the list by itself
                 if (wasPath && State == PanelState.List) return;
             }
@@ -754,7 +766,7 @@ namespace MusicHistory.Viewer
         public void Close()
         {
             if (State == PanelState.Closed) return;
-            if (Director.IsTouring && Director.Mode == TourMode.Path) Director.Exit();
+            if (Director.IsTouring && (Director.Mode == TourMode.Path || Director.Mode == TourMode.Mosaic)) Director.Exit();
             State = PanelState.Closed;
             Hovered = -1;
             ApplyState();
@@ -864,10 +876,10 @@ namespace MusicHistory.Viewer
             RefreshNowPlaying();
         }
 
-        /// <summary>M or the Melody button: shows or hides the melody graph (only while a mashup plays).</summary>
+        /// <summary>M or the Melody button: shows or hides the melody graph (only while a mashup, a duet loop or a mosaic plays).</summary>
         public bool ToggleMelody()
         {
-            if (State != PanelState.Playing || (Director.CurrentMashup == null && Director.CurrentDuet == null) || loader.MelodyGraph == null) return false;
+            if (State != PanelState.Playing || (Director.CurrentMashup == null && Director.CurrentDuet == null && Director.CurrentMosaic == null) || loader.MelodyGraph == null) return false;
             loader.MelodyGraph.Toggle();
             RefreshNowPlaying();
             return true;
@@ -881,6 +893,12 @@ namespace MusicHistory.Viewer
         public void JumpTo(int step)
         {
             if (State != PanelState.Playing || !Director.IsTouring) return;
+            // A mosaic's chips are its sections.
+            if (Director.CurrentMosaic != null)
+            {
+                Director.GoToMosaicSection(step);
+                return;
+            }
             Director.GoTo(step);
         }
 
@@ -888,12 +906,19 @@ namespace MusicHistory.Viewer
         {
             if (loader == null || root == null) return;
             WalkthroughDirector d = Director;
-            if (d.IsTouring && d.Mode == TourMode.Path)
+            if (d.IsTouring && (d.Mode == TourMode.Path || d.Mode == TourMode.Mosaic))
             {
                 if (State != PanelState.Playing) returnToList = State == PanelState.List;
                 State = PanelState.Playing;
                 Hovered = -1;
+                HoveredMosaic = -1;
                 if (d.CurrentPath != null) Selected = Math.Max(0, paths.IndexOf(d.CurrentPath));
+                if (d.CurrentMosaic != null)
+                {
+                    Tab = ListTab.Mosaics;
+                    SelectedMosaic = Math.Max(0, mosaics.IndexOf(d.CurrentMosaic));
+                }
+                else if (d.CurrentPath != null) Tab = ListTab.Paths;
                 framedByPanel = false;
                 ApplyState();
                 RefreshNowPlaying();
@@ -936,6 +961,11 @@ namespace MusicHistory.Viewer
         void ApplyPreview()
         {
             if (State != PanelState.List) return;
+            if (Tab == ListTab.Mosaics)
+            {
+                ApplyMosaicPreview();
+                return;
+            }
             int index = Hovered >= 0 ? Hovered : Selected;
             GraphRoute? route = index >= 0 && index < paths.Count && paths[index].IsPlayable ? loader.RouteFor(paths[index]) : null;
             loader.Highlighter.SetRoutePreview(route);
@@ -980,6 +1010,11 @@ namespace MusicHistory.Viewer
         /// <summary>Scrolls the rows by <paramref name="delta"/> (mouse wheel).</summary>
         public void Scroll(int delta)
         {
+            if (Tab == ListTab.Mosaics)
+            {
+                ScrollMosaics(delta);
+                return;
+            }
             int max = Math.Max(0, paths.Count - visibleRows);
             int next = Mathf.Clamp(firstRow + delta, 0, max);
             if (next == firstRow) return;
@@ -993,6 +1028,12 @@ namespace MusicHistory.Viewer
         public void RefreshList()
         {
             if (list == null) return;
+            if (Tab == ListTab.Mosaics)
+            {
+                RefreshMosaicList();
+                return;
+            }
+            ShowPathsTab();
             int playable = 0, mixes = 0, duets = 0;
             double total = 0;
             foreach (FeaturedPath p in paths)
@@ -1193,6 +1234,13 @@ namespace MusicHistory.Viewer
         {
             if (strip == null || loader == null) return;
             WalkthroughDirector d = Director;
+            if (d.IsTouring && d.CurrentMosaic is Mosaic playingMosaic)
+            {
+                if (State != PanelState.Playing) OnTourChanged();
+                RefreshMosaicStrip(d, playingMosaic);
+                return;
+            }
+            RestoreStripVia();
             FeaturedPath? p = d.CurrentPath;
             if (!d.IsTouring || p == null) return;
             if (State != PanelState.Playing) OnTourChanged();
@@ -1589,7 +1637,7 @@ namespace MusicHistory.Viewer
             Key.P, Key.Escape, Key.Enter, Key.NumpadEnter, Key.UpArrow, Key.DownArrow, Key.PageUp, Key.PageDown,
             Key.Digit1, Key.Digit2, Key.Digit3, Key.Digit4, Key.Digit5, Key.Digit6, Key.Digit7, Key.Digit8, Key.Digit9,
             Key.Numpad1, Key.Numpad2, Key.Numpad3, Key.Numpad4, Key.Numpad5, Key.Numpad6, Key.Numpad7, Key.Numpad8, Key.Numpad9,
-            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C, Key.M, Key.K
+            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C, Key.M, Key.K, Key.O
         };
 
         void Update()
@@ -1607,10 +1655,21 @@ namespace MusicHistory.Viewer
             switch (State)
             {
                 case PanelState.Closed:
+                    if (key == Key.O)
+                    {
+                        OpenTab(ListTab.Mosaics);
+                        return true;
+                    }
                     if (key != Key.P) return false;
-                    Open();
+                    OpenTab(ListTab.Paths);
                     return true;
                 case PanelState.List:
+                    if (key == Key.O)
+                    {
+                        SetTab(Tab == ListTab.Mosaics ? ListTab.Paths : ListTab.Mosaics);
+                        return true;
+                    }
+                    if (Tab == ListTab.Mosaics) return HandleMosaicListKey(key);
                     switch (key)
                     {
                         case Key.P:
@@ -1646,6 +1705,8 @@ namespace MusicHistory.Viewer
                     return false;
                 case PanelState.Playing:
                     WalkthroughDirector d = Director;
+                    // A mosaic: no MIDI to compare (C), no duet loop (K), no switching lists (O).
+                    if (d.CurrentMosaic != null && (key == Key.C || key == Key.K || key == Key.O)) return false;
                     switch (key)
                     {
                         case Key.Escape:

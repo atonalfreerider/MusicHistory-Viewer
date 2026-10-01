@@ -49,8 +49,15 @@ namespace MusicHistory.Walkthrough
     /// <see cref="DuetPlayer"/>, with no narration. The step is the pair playing; both singers glow
     /// and the edge between them lights up; during a handoff the borrowed instrumental's song is
     /// marked; the camera frames the pair. Next / Back / a chip jump between pairs (round the loop).
+    ///
+    /// A melody mosaic (data/audio/mosaics/mosaics.json, <see cref="MosaicCatalog"/>, DESIGN.md §17;
+    /// <see cref="StartMosaic"/>, mode <see cref="TourMode.Mosaic"/>) plays its mix once on
+    /// <see cref="MosaicPlayer"/>, with no narration: the target's loop, the loop rebuilt from other
+    /// songs' melodies, then harmonized. The step is the loop playing; the target glows while it sings,
+    /// the playing piece's song while it sings, the harmony voices' songs with the target; the camera
+    /// frames them. Next / Back jump between loops, a section chip to its section.
     /// </summary>
-    public sealed class WalkthroughDirector : MonoBehaviour
+    public sealed partial class WalkthroughDirector : MonoBehaviour
     {
         public TourMode Mode = TourMode.Lineage;
         [Min(.1f)] public float FlyDuration = 1.8f;
@@ -195,6 +202,10 @@ namespace MusicHistory.Walkthrough
             MashupAudio.MixFinished += OnMixFinished;
             DuetAudio = GetComponent<DuetPlayer>();
             if (DuetAudio == null) DuetAudio = gameObject.AddComponent<DuetPlayer>();
+            MosaicAudio = GetComponent<MosaicPlayer>();
+            if (MosaicAudio == null) MosaicAudio = gameObject.AddComponent<MosaicPlayer>();
+            MosaicAudio.MixFinished -= OnMosaicFinished;
+            MosaicAudio.MixFinished += OnMosaicFinished;
             if (Player != null && !ReferenceEquals(Player, Silent))
             {
                 Player.Finished -= OnClipFinished;
@@ -257,6 +268,7 @@ namespace MusicHistory.Walkthrough
             if (Silent != null) Silent.Finished -= OnClipFinished;
             if (Preview != null) Preview.Finished -= OnClipFinished;
             if (MashupAudio != null) MashupAudio.MixFinished -= OnMixFinished;
+            if (MosaicAudio != null) MosaicAudio.MixFinished -= OnMosaicFinished;
             if (Player != null) Player.Finished -= OnClipFinished;
         }
 
@@ -299,9 +311,10 @@ namespace MusicHistory.Walkthrough
             else RefreshIdleHud(true);
         }
 
-        /// <summary>C: toggles "compare in C / 120 BPM" (MIDI, no morph); a running tour restarts its step.</summary>
+        /// <summary>C: toggles "compare in C / 120 BPM" (MIDI, no morph); a running tour restarts its step. A mosaic has no MIDI to compare: C does nothing.</summary>
         public void ToggleApplesToApples()
         {
+            if (CurrentMosaic != null) return;
             ApplesToApples = !ApplesToApples;
             if (IsTouring) GoTo(StepIndex);
         }
@@ -326,6 +339,17 @@ namespace MusicHistory.Walkthrough
                     foreach (FeaturedPath p in Catalog.Paths)
                         if (p.IsPlayable && chosen == null) chosen = p;
                 return chosen != null && StartPathTour(chosen);
+            }
+            if (mode == TourMode.Mosaic)
+            {
+                // The first playable mosaic with the song (target, piece or harmony), else the first playable one.
+                Mosaic? pick = null;
+                foreach (Mosaic m in Mosaics.Mosaics)
+                    if (m.IsPlayable && pick == null && (from == null || m.Songs.Exists(s => s.NodeId == from.NodeId))) pick = m;
+                if (pick == null)
+                    foreach (Mosaic m in Mosaics.Mosaics)
+                        if (m.IsPlayable && pick == null) pick = m;
+                return pick != null && StartMosaic(pick);
             }
             if (mode == TourMode.Family)
                 return TourPlanner.FamilyFor(Loader.Data, from != null ? from.NodeId : null, edge?.Record) is int family && StartFamilyTour(family);
@@ -360,7 +384,7 @@ namespace MusicHistory.Walkthrough
                 if (step.NodeId < 1 || step.NodeId > Loader.Nodes.Count) return false;
                 planned.Add(step.NodeId);
             }
-            if (Mode != TourMode.Path) modeBeforePath = Mode;
+            if (Mode != TourMode.Path && Mode != TourMode.Mosaic) modeBeforePath = Mode;
             // Another variant or path replaces the one playing: its player stops first.
             if (IsTouring) ActivePlayer?.Stop();
             CurrentPath = path;
@@ -395,9 +419,11 @@ namespace MusicHistory.Walkthrough
                 PathDuet = null;
                 DuetMode = false;
             }
+            if (mode != TourMode.Mosaic) PlayingMosaic = null;
             SegmentIndex = -1;
             VocalStepIndex = -1;
             ResetDuetState();
+            ResetMosaicState();
             framedPair = (-1, -1);
             grownEdges.Clear();
             Mode = mode;
@@ -416,6 +442,11 @@ namespace MusicHistory.Walkthrough
         public void GoTo(int index)
         {
             if (!IsTouring || steps.Count == 0) return;
+            if (CurrentMosaic != null)
+            {
+                GoToMosaic(index);
+                return;
+            }
             if (CurrentDuet != null)
             {
                 GoToDuet(index);
@@ -518,7 +549,7 @@ namespace MusicHistory.Walkthrough
 
         /// <summary>Screen area the current step is framed into (above the melody graph while a mashup shows it).</summary>
         public Rect FramingViewport =>
-            (CurrentMashup != null || CurrentDuet != null) && Loader != null && Loader.MelodyGraph != null && Loader.MelodyGraph.UserVisible ? MashupTourViewport : TourViewport;
+            (CurrentMashup != null || CurrentDuet != null || CurrentMosaic != null) && Loader != null && Loader.MelodyGraph != null && Loader.MelodyGraph.UserVisible ? MashupTourViewport : TourViewport;
 
         /// <summary>Flies the camera to frame <paramref name="child"/> with <paramref name="partner"/>.</summary>
         void FlyTo(SongNode child, SongNode? partner)
@@ -541,7 +572,8 @@ namespace MusicHistory.Walkthrough
         public void Reframe(bool immediate)
         {
             if (!IsTouring || CurrentClip == null) return;
-            FlyTo(Loader.NodeById(CurrentClip.NodeId), StepPartner);
+            if (CurrentMosaic != null) FlyToNodes(mosaicFramed);
+            else FlyTo(Loader.NodeById(CurrentClip.NodeId), StepPartner);
             Camera? cam = Loader.ViewCamera;
             if (!immediate || cam == null) return;
             flyT = 1f;
@@ -734,6 +766,11 @@ namespace MusicHistory.Walkthrough
         public void RefreshStepHighlight()
         {
             if (!IsTouring || CurrentClip == null) return;
+            if (CurrentMosaic != null)
+            {
+                SyncMosaic(MosaicSeconds, force: true);
+                return;
+            }
             if (CurrentDuet != null)
             {
                 SyncDuet(LoopSeconds, force: true);
@@ -775,6 +812,12 @@ namespace MusicHistory.Walkthrough
         public void Next()
         {
             if (!IsTouring) return;
+            if (CurrentMosaic is Mosaic mosaic)
+            {
+                // The next loop (into the next section after a section's last loop).
+                if (MosaicLoop + 1 < mosaic.Loops) GoTo(MosaicLoop + 1);
+                return;
+            }
             if (CurrentDuet is DuetLoop l)
             {
                 // The next pair, round the loop.
@@ -794,6 +837,11 @@ namespace MusicHistory.Walkthrough
         public void Previous()
         {
             if (!IsTouring) return;
+            if (CurrentMosaic != null)
+            {
+                GoTo(Math.Max(0, MosaicLoop - 1));
+                return;
+            }
             if (CurrentDuet is DuetLoop l)
             {
                 // The previous pair, round the loop.
@@ -836,12 +884,14 @@ namespace MusicHistory.Walkthrough
             PathMashup = null;
             PathDuet = null;
             DuetMode = false;
+            PlayingMosaic = null;
             SegmentIndex = -1;
             VocalStepIndex = -1;
             ResetDuetState();
+            ResetMosaicState();
             framedPair = (-1, -1);
             grownEdges.Clear();
-            if (Mode == TourMode.Path) Mode = modeBeforePath;
+            if (Mode == TourMode.Path || Mode == TourMode.Mosaic) Mode = modeBeforePath;
             Loader.Highlighter.EndTour();
             if (Loader.Highlighter.FocusEdge != null) Loader.Hud.ShowEdge(Loader.Highlighter.FocusEdge);
             else Loader.Hud.ShowSong(Loader.Highlighter.Focus);
@@ -878,7 +928,13 @@ namespace MusicHistory.Walkthrough
             if (advancePending)
             {
                 advancePending = false;
-                if (CurrentDuet != null)
+                if (CurrentMosaic is Mosaic stalled)
+                {
+                    // Only the watchdog gets here on a mosaic: on to the next loop, or done.
+                    if (MosaicLoop + 1 < stalled.Loops) GoTo(MosaicLoop + 1);
+                    else TourComplete = true;
+                }
+                else if (CurrentDuet != null)
                 {
                     // Only the watchdog gets here on a duet loop: on to the next pair.
                     Next();
@@ -896,6 +952,7 @@ namespace MusicHistory.Walkthrough
             // A mashup's segments drive the steps (the mix plays on by itself); a duet loop's likewise.
             if (CurrentMashup != null && MashupAudio != null) SyncMashup(MashupAudio.CurrentSeconds);
             if (CurrentDuet != null && DuetAudio != null) SyncDuet(DuetAudio.CurrentSeconds);
+            if (CurrentMosaic != null && MosaicAudio != null) SyncMosaic(MosaicAudio.CurrentSeconds);
 
             ISongPlayer? active = ActivePlayer;
             if (active != null && !active.Paused && !TourComplete && !advancePending)
@@ -954,6 +1011,11 @@ namespace MusicHistory.Walkthrough
         void UpdateTourHud()
         {
             if (CurrentClip == null || steps.Count == 0) return;
+            if (Mode == TourMode.Mosaic && CurrentMosaic != null)
+            {
+                UpdateMosaicHud();
+                return;
+            }
             if (Mode == TourMode.Path && CurrentPath != null)
             {
                 UpdatePathHud();
@@ -1143,6 +1205,7 @@ namespace MusicHistory.Walkthrough
                 if (ReferenceEquals(p, Preview)) return "recording preview";
                 if (ReferenceEquals(p, MashupAudio)) return "mashup mix";
                 if (ReferenceEquals(p, DuetAudio)) return "duet loop";
+                if (ReferenceEquals(p, MosaicAudio)) return "melody mosaic";
                 if (ReferenceEquals(p, Silent))
                     return Player != null && !ReferenceEquals(Player, Silent) ? "silent (MIDI file missing)" : "silent (no synth)";
                 return ApplesToApples ? "synth (compare in C / 120 BPM)" : "synth";
@@ -1155,6 +1218,12 @@ namespace MusicHistory.Walkthrough
             SongClip? clip = CurrentClip;
             ISongPlayer? p = ActivePlayer;
             if (clip == null || p == null) return default;
+            if (CurrentMosaic is Mosaic mo && ReferenceEquals(p, MosaicAudio))
+            {
+                double t = MosaicAudio!.CurrentSeconds;
+                return new StepReadout(true, ActivePlayerName, mo.Key, mo.Key, mo.Key, 0, 0, mo.Bpm, mo.Bpm, mo.Bpm, 1,
+                    t, MosaicAudio.DurationSeconds > 0 ? MosaicAudio.DurationSeconds : mo.Duration, true, "audio", "audio");
+            }
             if (CurrentDuet is DuetLoop dl && ReferenceEquals(p, DuetAudio))
             {
                 double t = DuetAudio!.CurrentSeconds;

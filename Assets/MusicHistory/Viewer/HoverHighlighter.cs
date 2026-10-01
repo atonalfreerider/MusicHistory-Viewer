@@ -45,7 +45,7 @@ namespace MusicHistory.Viewer
     /// <see cref="EndTour"/>. While the featured-paths panel is open, the hovered or selected
     /// path's route rests on the graph (<see cref="SetRoutePreview"/>): its songs and edges glow,
     /// everything else dims; hovering a song still shows that song.
-    /// The tour steps (<see cref="ShowTourStep"/>, <see cref="ShowPathStep"/>, <see cref="ShowDuetStep"/>)
+    /// The tour steps (<see cref="ShowTourStep"/>, <see cref="ShowPathStep"/>, <see cref="ShowDuetStep"/>, <see cref="ShowMosaicStep"/>)
     /// grow the songs they light to three times their size (<see cref="SongNode.SetHighlighted"/>);
     /// hover, click, edge cards and route previews never resize a bubble.
     /// </summary>
@@ -441,6 +441,41 @@ namespace MusicHistory.Viewer
             }
             SetExtraLabels(route.Nodes);
             FocusChanged?.Invoke(b);
+        }
+
+        /// <summary>
+        /// Melody mosaic: the songs sounding now (<paramref name="lit"/>: the target, the playing piece's
+        /// song, the harmony voices) glow at three times their size, <paramref name="related"/> (the
+        /// target under a piece) glows faintly, the mosaic's other songs (<paramref name="members"/>) rest
+        /// undimmed with their labels, everything else fades; edges dim (a mosaic is no lineage).
+        /// <paramref name="focus"/> is the song the wheel and the HUD follow.
+        /// </summary>
+        public void ShowMosaicStep(IReadOnlyCollection<SongNode> lit, SongNode? related, IReadOnlyCollection<SongNode> members, SongNode focus)
+        {
+            Suspended = true;
+            Loader.Labels.HideDimmed = true;
+            Hovered = null;
+            Focus = focus;
+            FocusEdge = null;
+            FocusRoute = null;
+            applied = true;
+            if (Loader.RouteLine != null) Loader.RouteLine.Show(null);
+            HashSet<SongNode> on = new(lit), rest = new(members);
+            foreach (SongNode n in Loader.Nodes)
+            {
+                n.SetState(on.Contains(n) ? BubbleState.Focus : n == related ? BubbleState.Related
+                    : rest.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
+                n.SetHighlighted(n.State == BubbleState.Focus);
+            }
+            foreach (InfluenceEdge e in Loader.Edges)
+            {
+                e.SetState(EdgeState.Dimmed);
+                e.SetShown(e.IsTree || Loader.ShowAllSecondaryEdges);
+            }
+            List<SongNode> labels = new(members);
+            foreach (SongNode n in lit) if (!rest.Contains(n)) labels.Add(n);
+            SetExtraLabels(labels);
+            FocusChanged?.Invoke(focus);
         }
 
         public void EndTour()

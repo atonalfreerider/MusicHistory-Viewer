@@ -40,6 +40,10 @@ namespace MusicHistory.Viewer
     /// the inspector's DuetsFile, else &lt;data&gt;/audio/duets/duets.json. A path with a duet loop offers
     /// it next to its narrated mix (K); a missing file offers none.
     ///
+    /// Melody mosaics (<see cref="MosaicCatalog"/>, DESIGN.md §17): -musicHistoryMosaics &lt;mosaics.json&gt;,
+    /// else the inspector's MosaicsFile, else &lt;data&gt;/audio/mosaics/mosaics.json. The featured-paths
+    /// panel lists them (O); a missing file lists none.
+    ///
     /// Artist photos (<see cref="ArtistImages"/>) also go onto the bubbles (<see cref="BubblePhotos"/>).
     /// </summary>
     [RequireComponent(typeof(ForceDirectedGraph))]
@@ -82,6 +86,8 @@ namespace MusicHistory.Viewer
         public string ArtistsFile = "";
         [Tooltip("Blank: -musicHistoryDuets <duets.json>, else <data>/audio/duets/duets.json.")]
         public string DuetsFile = "";
+        [Tooltip("Blank: -musicHistoryMosaics <mosaics.json>, else <data>/audio/mosaics/mosaics.json.")]
+        public string MosaicsFile = "";
 
         [Header("Labels")]
         [Range(0, 300)] public int AlwaysLabelledSongs = 40;
@@ -115,6 +121,8 @@ namespace MusicHistory.Viewer
         public MelodyGraphPanel? MelodyGraph { get; private set; }
         /// <summary>The featured paths' duet loops, bound to this graph and the paths (empty when duets.json is missing).</summary>
         public DuetCatalog Duets { get; private set; } = DuetCatalog.Empty("not loaded");
+        /// <summary>The melody mosaics, bound to this graph (empty when mosaics.json is missing).</summary>
+        public MosaicCatalog Mosaics { get; private set; } = MosaicCatalog.Empty("not loaded");
         /// <summary>The artist photos on the bubbles.</summary>
         public BubblePhotos? BubblePhotos { get; private set; }
         /// <summary>The narrated walkthroughs (data/audio/narration/narration.json; empty when missing).</summary>
@@ -140,6 +148,7 @@ namespace MusicHistory.Viewer
         readonly List<InfluenceEdge> edges = new();
         readonly List<SongNode> pinned = new();
         readonly Dictionary<FeaturedPath, GraphRoute> routes = new();
+        readonly Dictionary<Mosaic, GraphRoute> mosaicRoutes = new();
         GameObject? graphRoot;
 
         public SongNode NodeById(int nodeId) => nodes[nodeId - 1];
@@ -277,6 +286,8 @@ namespace MusicHistory.Viewer
             UseMashups(MashupCatalog.Load(mashupsFile), mashupsReason);
             string duetsFile = ResolveDuetsPath(DuetsFile, out string duetsReason);
             UseDuets(DuetCatalog.Load(duetsFile), duetsReason);
+            string mosaicsFile = ResolveMosaicsPath(MosaicsFile, out string mosaicsReason);
+            UseMosaics(MosaicCatalog.Load(mosaicsFile), mosaicsReason);
             string narrationFile = NarrationCatalog.ResolvePath(NarrationFile, out string narrationReason);
             string artistsFile = ArtistImages.ResolvePath(ArtistsFile, out string artistsReason);
             UseNarration(NarrationCatalog.Load(narrationFile), ArtistImages.Load(artistsFile), $"{narrationReason}; photos {artistsReason}");
@@ -350,6 +361,29 @@ namespace MusicHistory.Viewer
             Debug.Log($"MusicHistory: duet loops {Duets.Status}; {Duets.PlayableCount} playable; {where}" +
                       (reason.Length > 0 ? $" [{reason}]" : "") +
                       (Duets.Problems.Count > 0 ? $"; {Duets.Problems.Count} problems, first: {string.Join(" | ", Duets.Problems.Take(3))}" : ""));
+        }
+
+        /// <summary>
+        /// Binds <paramref name="catalog"/> (mosaics.json) to this graph and hands it to the walkthrough;
+        /// the featured-paths panel lists the mosaics (O).
+        /// </summary>
+        public void UseMosaics(MosaicCatalog catalog, string reason = "")
+        {
+            Mosaics = catalog ?? MosaicCatalog.Empty("none");
+            mosaicRoutes.Clear();
+            if (Data != null)
+            {
+                Dictionary<string, int> byWork = new(StringComparer.Ordinal);
+                foreach (SongRecord s in Data.Songs)
+                    if (!string.IsNullOrEmpty(s.WorkId) && !byWork.ContainsKey(s.WorkId)) byWork[s.WorkId] = s.NodeId;
+                Mosaics.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null);
+            }
+            Director.UseMosaics(Mosaics);
+            if (Paths != null) Paths.Build(this);
+            string where = Mosaics.SourcePath.Length > 0 ? Mosaics.SourcePath : "(in memory)";
+            Debug.Log($"MusicHistory: mosaics {Mosaics.Status}; {Mosaics.PlayableCount} playable; {where}" +
+                      (reason.Length > 0 ? $" [{reason}]" : "") +
+                      (Mosaics.Problems.Count > 0 ? $"; {Mosaics.Problems.Count} problems, first: {string.Join(" | ", Mosaics.Problems.Take(3))}" : ""));
         }
 
         void BindDuets()
@@ -434,6 +468,20 @@ namespace MusicHistory.Viewer
                 if (kv.Value > bestCount || (kv.Value == bestCount && kv.Key < best)) (best, bestCount) = (kv.Key, kv.Value);
             route.Color = SongPalette.ChannelColor(best);
             routes[path] = route;
+            return route;
+        }
+
+        /// <summary>
+        /// A mosaic's songs on the graph, for the list's preview: the target, the pieces' songs in
+        /// piece order, the harmony voices (no edges: a mosaic is no lineage). Cached per catalog.
+        /// </summary>
+        public GraphRoute RouteFor(Mosaic mosaic)
+        {
+            if (mosaicRoutes.TryGetValue(mosaic, out GraphRoute? cached)) return cached;
+            GraphRoute route = new(mosaic) { Color = SongPalette.Hex("#ffcf4a") };
+            foreach (MosaicSong s in mosaic.Songs)
+                if (s.NodeId >= 1 && s.NodeId <= nodes.Count && !route.Nodes.Contains(nodes[s.NodeId - 1])) route.Nodes.Add(nodes[s.NodeId - 1]);
+            mosaicRoutes[mosaic] = route;
             return route;
         }
 
@@ -640,6 +688,7 @@ namespace MusicHistory.Viewer
             if (Director != null) Director.Exit();
             if (BubblePhotos != null) BubblePhotos.Clear();
             routes.Clear();
+            mosaicRoutes.Clear();
             if (Simulation != null) Simulation.Clear();
             if (Labels != null) Labels.Clear();
             if (graphRoot != null) Discard(graphRoot);
@@ -741,6 +790,25 @@ namespace MusicHistory.Viewer
             }
             reason = "default";
             return DuetCatalog.DefaultPath();
+        }
+
+        /// <summary>mosaics.json: -musicHistoryMosaics, else <paramref name="configured"/>, else &lt;data&gt;/audio/mosaics/mosaics.json.</summary>
+        public static string ResolveMosaicsPath(string configured, out string reason)
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+            {
+                if (!string.Equals(args[i], MosaicCatalog.CommandLineFlag, StringComparison.OrdinalIgnoreCase)) continue;
+                reason = "command line";
+                return ResolveUserPath(args[i + 1]);
+            }
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                reason = "inspector";
+                return ResolveUserPath(configured);
+            }
+            reason = "default";
+            return MosaicCatalog.DefaultPath();
         }
 
         public static string ResolveDatabasePath(string configured, out string reason)

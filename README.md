@@ -54,6 +54,7 @@ next to `data/graph/` finds `data/songs/`.
 | M · the "Melody" button (while a path plays its mashup mix or its duet loop) | Show or hide the melody graph above the now-playing strip (see "Mashup mixes and the melody graph"). |
 | N (while a narrated path plays) | Captions on or off: the narration's line and its photo card (see "Narrated walkthroughs"; there is no voiceover). On a path without narration N still steps on; → always does. |
 | K · the "Duet" buttons | In the featured-paths list: play the selected path's duet loop. While a path plays: switch between its duet loop and its narrated mix (see "Duet loops"). |
+| O · the list's "Mosaics" button | Open the melody mosaics (see "Melody mosaics"); in the open list, switch between the paths and the mosaics. While a mosaic plays: ← → previous / next loop, a section chip jumps there, M the melody graph, Space pause, Esc back to the list. |
 
 Each walkthrough step does four things:
 
@@ -269,6 +270,67 @@ start plus the first 4 bars after the wrap (so the seamless loop point is in the
 "$UNITY" -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathRecorder.Record -path <path id> -format vertical -variant duet -logFile "$PWD/record.log"
 ```
 
+## Melody mosaics (DESIGN §17)
+
+A melody mosaic is one song's melody (the target's loop) rebuilt piece by piece from other songs'
+sung melodies, each piece transposed and time-scaled onto it, then harmonized by other melodies. The
+pipeline's `mosaic` stage writes `data/audio/mosaics/mosaics.json` (version 1; the pipeline's
+`musichistory/mosaic/contract.py` is its validator) next to one `<id>/mix.mp3` per mosaic: as many
+whole loops as fit in 90 s, **original** (the target) → **mosaic** (the target's band under the
+pieces' vocals) → **harmony** (the target with the harmony voices). `-musicHistoryMosaics <file>` or
+the loader's `MosaicsFile` picks another file; a missing one lists none (the list says so). The vocals
+are audio only: the file holds no words, and the viewer shows none. There is no narration.
+
+- **Choosing one.** O opens the featured-paths sheet on its mosaics list (the header's **Mosaics  O**
+  button, or O again, switches between the paths and the mosaics; P always opens the paths). Each row
+  shows the mosaic's name and length, its target song (title, artist, year), how many songs rebuild
+  it, its pieces across the loop as blocks in their songs' colours and its note match; below the
+  rows, the hovered (else selected) mosaic's target, pieces and harmonies. ↑↓ / 1–9 select (the
+  mosaic's songs light up on the graph), Enter, a click or **Play mosaic** plays it, Esc closes.
+- **Playback** (`Playback/MosaicPlayer.cs`). The MP3 is decoded once to PCM and played once, start to
+  end, by an AudioSource of its own child object; the clock is the audio thread's position, smoothed
+  for display (the graph pans without stutter) and snapped back when it drifts. Seeks, Pause and Stop
+  fade; without an audio device (batchmode) or while the file loads, a main-thread clock keeps time.
+  Next / → and Back / ← jump to the next / previous loop's start (into the next section after a
+  section's last loop); a section chip jumps to its section; Enter restarts the loop; at the end
+  Space replays. C (compare), K and O do nothing while a mosaic plays.
+- **On the graph** (`WalkthroughDirector.Mosaic.cs`, `HoverHighlighter.ShowMosaicStep`). The songs
+  sounding grow to 3x with their photos: the target in the original and harmony loops (with the
+  harmony voices' songs); in the mosaic loops the playing piece's song, the target glowing faintly
+  beside it (between two pieces the last one stays lit). The mosaic's other songs rest undimmed with
+  their labels, everything else fades. The camera frames the lit songs (the piece's song with the
+  target).
+- **The name** sits top left like a path's (`name`, e.g. "That's All Right, Reassembled"), the chord
+  wheel shows the target loop's chords (one loop round the wheel) with the chord sounding lit.
+- **The melody graph** (`Viewer/MelodyGraphPanel.Mosaic.cs`, maths in `Viewer/MosaicTimeline.cs`) is a
+  timeline of the mix's beats, loop after loop, panning right to left under the centre playhead in
+  both layouts (one loop per plot width in landscape, three times larger in portrait), every loop
+  start marked and tagged (`LOOP 3 · MOSAIC`), the chord strip the target loop's chords. Notes are
+  drawn as steps (each note level, joined to the next when it follows within 0.12 beat). Only the loop
+  playing is bright: in the original loops the target's melody with its point of bloom light; in the
+  mosaic loops the target stays as a faint guide line and each piece is a span in its song's own
+  colour (a distinct colour per song; the target is warm white), labelled with the song's title and
+  year, its notes as heard (shifted and warped), the playing piece bright with its light; in the
+  harmony loops the target and each harmony voice as lines of their own colours, each with its light
+  while it sounds. The title row names the target and the harmony voices.
+- **The strip** reads `Mosaic: <target title> rebuilt from N songs`, `LOOP k / n`, the section (in the
+  kicker and as three chips: Original, Mosaic, Harmony, with the loop within it), what is heard (the
+  original's song; the playing piece as `Fireflies, 2009 · 3 semitones down · 84% speed · 4/4 notes
+  match`, the notes matched of the larger of the target's notes in the span and the piece's own; the
+  harmony voices with their consonance), the key, BPM, coverage and match, and the whole mix on the
+  time bar with the mosaic (white) and harmony (accent) sections marked.
+
+### Recording a melody mosaic
+
+**MusicHistory → Record melody mosaic → Horizontal 1920x1080** or **Vertical 1080x1920** records the
+mosaic playing or selected in the mosaics list (play mode), else the one recorded last, else the first
+playable one: its whole mix from the start to the end plus about 1 s, to
+`<MusicHistory>/data/recordings/<mosaic id>_mosaic_<horizontal|vertical>.mp4`:
+
+```bash
+"$UNITY" -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathRecorder.Record -path <mosaic id> -format vertical -variant mosaic -logFile "$PWD/record.log"
+```
+
 ## Photos on the bubbles
 
 Every song whose artist has a catalogued photo (`data/images/artists.json`, DESIGN §15) shows it as a
@@ -469,6 +531,9 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Viewer/BubblePhotos.cs`, `Assets/Resources/BubblePhoto.shader` | Artist photos on the bubbles. |
 | `Viewer/ChordRing.cs` | The chord colours (Resonance's tonal colour field), chord names, the key a chord list is read in, main-loop parsing and the chord wheel. |
 | `Assets/MusicHistory/Editor/DuetValidation.cs` | Duet loops, the vertical melody graph and the bubble photos in edit mode. |
+| `Playback/MosaicCatalog.cs`, `MosaicPlayer.cs` | `mosaics.json` v1 reader (no Unity API): sections, loops, beats, chords, notes, pieces, harmonies, songs, the mix clock (mix beat, loop, section, piece), the words, contract checks, binding; the play-once mix player. |
+| `Viewer/MosaicTimeline.cs`, `MelodyGraphPanel.Mosaic.cs`, `FeaturedPathsPanel.Mosaics.cs`, `Walkthrough/WalkthroughDirector.Mosaic.cs` | A mosaic's melody graph maths (no Unity API: lines per voice and loop, what is bright, where a light rides) and drawing; the mosaics list and strip; the mosaic tour (lit songs, framing, HUD). |
+| `Assets/MusicHistory/Editor/MosaicValidation.cs` | Melody mosaics in edit mode. |
 | `Assets/MusicHistory/Contracts/` | Shared with the audio module (foundation, do not edit). |
 
 ## Performance (measured)
@@ -634,6 +699,26 @@ Duet loops, the vertical melody graph and the bubble photos are checked on their
 # after trimming, two wraps, the clock continuous through them, real-time rate). -duetPlayId <path id>,
 # -validationDuets <file>. Writes data/screens/duet_fullplay.json.
 "$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullDuet -logFile "$PWD/duet_full.log"
+```
+
+Melody mosaics are checked on their own (**MusicHistory → Run Mosaic Validation**, or):
+
+```bash
+# Pure: the mosaics.json v1 contract on an inline mosaic (sections, loops, beats, chords, notes, pieces,
+# harmonies, songs and their colours), the mix clock (mix beat, loops, sections, the piece at a beat),
+# the notes as lines and which are bright, the words, contract violations, malformed and missing files;
+# the real mosaics.json (no problems, every mix there, the mix beat ending with the last loop, every
+# piece's match a whole number of notes, the spans holding the coverage). Scene, for a synthetic
+# catalog from the graph's songs, the real mosaics.json and -validationMosaics <file>: O opens the
+# list (target, number of songs), the selection lights the songs, Enter plays (no narration); the whole
+# mix on the clock (sections and loops in order, finished once; the songs sounding at 3x; the graph
+# panning under a centre playhead ±0.5 px, the bright lines, every light on its line, the spans in their
+# songs' colours with the playing one lit around the playhead; the wheel on the target loop's chords;
+# the name; the strip); mid-piece (the strip's words, the camera on the piece's song and the target,
+# the lit chord, the 3x bubble, no overlaps); the harmony section; Next/Back, the chips, Space, M, C/K/O
+# ignored, Esc; portrait 1080x1920. Writes mosaic_landscape.png and mosaic_portrait.png (mosaic section)
+# and mosaic_validation.json.
+"$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.MosaicValidation.Run -logFile "$PWD/mosaics.log"
 ```
 
 ## Lyric themes

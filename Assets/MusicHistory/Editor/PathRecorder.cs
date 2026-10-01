@@ -40,6 +40,12 @@ namespace MusicHistory.EditorTools
     /// instead (no narration): one full cycle from the loop's start plus the first
     /// <see cref="DuetTailBars"/> bars after the wrap, so the seamless loop point is in the video.
     /// Output: &lt;MusicHistory&gt;/data/recordings/&lt;path id&gt;_duet_&lt;format&gt;.mp4.
+    ///
+    /// Melody mosaics (DESIGN.md §17): MusicHistory › Record melody mosaic › Horizontal / Vertical, or
+    /// <c>-variant mosaic -path &lt;mosaic id&gt;</c>, record a mosaic's whole mix from its start to its end
+    /// plus <see cref="MosaicTailSeconds"/> (no narration). The menu records the mosaic playing or
+    /// selected in the mosaics list (play mode), else the one recorded last, else the first playable.
+    /// Output: &lt;MusicHistory&gt;/data/recordings/&lt;mosaic id&gt;_mosaic_&lt;format&gt;.mp4.
     /// </summary>
     public static class PathRecorder
     {
@@ -49,6 +55,10 @@ namespace MusicHistory.EditorTools
         const string ScenePath = "Assets/Scenes/SongInfluenceGraph.unity";
         const string Menu = "MusicHistory/Record narrated path/";
         const string DuetMenu = "MusicHistory/Record duet loop/";
+        const string MosaicMenu = "MusicHistory/Record melody mosaic/";
+        const string LastMosaicPref = "MusicHistory.PathRecorder.LastMosaic";
+        /// <summary>Seconds of picture after a mosaic's mix ends.</summary>
+        public const float MosaicTailSeconds = 1f;
         /// <summary>Bars recorded after the duet loop's wrap (the loop point plays seamlessly into its start).</summary>
         public const int DuetTailBars = 4;
         public const int Fps = 30;
@@ -61,7 +71,8 @@ namespace MusicHistory.EditorTools
         static RecorderController? controller;
         static SongGraphLoader? loader;
         static FeaturedPath? path;
-        static bool vertical, exitWhenDone, duet;
+        static Mosaic? mosaic;
+        static bool vertical, exitWhenDone, duet, mosaicMix;
         static double duetStart, duetLength;
         static int width, height, tailEndFrame, resizeFrames;
         static double deadline, recordDeadline;
@@ -88,6 +99,22 @@ namespace MusicHistory.EditorTools
         [MenuItem(DuetMenu + "Vertical 1080x1920", true)]
         static bool CanRecordDuet() => phase == Phase.Idle;
 
+        [MenuItem(MosaicMenu + "Horizontal 1920x1080", priority = 1)]
+        static void RecordMosaicHorizontal() => Begin(MenuMosaicId(), false, false, mosaicVariant: true);
+
+        [MenuItem(MosaicMenu + "Vertical 1080x1920", priority = 2)]
+        static void RecordMosaicVertical() => Begin(MenuMosaicId(), true, false, mosaicVariant: true);
+
+        [MenuItem(MosaicMenu + "Horizontal 1920x1080", true)]
+        [MenuItem(MosaicMenu + "Vertical 1080x1920", true)]
+        static bool CanRecordMosaic() => phase == Phase.Idle;
+
+        [MenuItem(MosaicMenu + "Stop recording", priority = 20)]
+        static void StopMosaicFromMenu() => Finish("stopped from the menu", 4);
+
+        [MenuItem(MosaicMenu + "Stop recording", true)]
+        static bool CanStopMosaic() => CanStop();
+
         [MenuItem(DuetMenu + "Stop recording", priority = 20)]
         static void StopDuetFromMenu() => Finish("stopped from the menu", 4);
 
@@ -100,7 +127,7 @@ namespace MusicHistory.EditorTools
         [MenuItem(Menu + "Stop recording", true)]
         static bool CanStop() => phase != Phase.Idle || SessionState.GetString(RequestKey, "").Length > 0;
 
-        /// <summary>-executeMethod entry: -path &lt;id&gt; -format horizontal|vertical [-variant narrated|duet].</summary>
+        /// <summary>-executeMethod entry: -path &lt;id&gt; -format horizontal|vertical [-variant narrated|duet|mosaic] (a mosaic's id with mosaic).</summary>
         public static void Record()
         {
             string? id = Arg("-path");
@@ -112,29 +139,30 @@ namespace MusicHistory.EditorTools
                 EditorApplication.Exit(2);
                 return;
             }
-            if (variant != "narrated" && variant != "duet")
+            if (variant != "narrated" && variant != "duet" && variant != "mosaic")
             {
-                Debug.LogError($"[record] -variant must be narrated or duet, not '{variant}'.");
+                Debug.LogError($"[record] -variant must be narrated, duet or mosaic, not '{variant}'.");
                 EditorApplication.Exit(2);
                 return;
             }
             if (Application.isBatchMode)
                 Debug.LogWarning("[record] -batchmode has no Game view to record: run Unity without -batchmode (the editor quits when the video is written).");
-            Begin(string.IsNullOrWhiteSpace(id) ? null : id, format == "vertical", exitWhenDone: true, variant == "duet");
+            Begin(string.IsNullOrWhiteSpace(id) ? null : id, format == "vertical", exitWhenDone: true, variant == "duet", variant == "mosaic");
         }
 
         /// <summary>
         /// Records path <paramref name="pathId"/> (null: the menu's choice) in the given format;
-        /// <paramref name="duetLoop"/> records its duet loop instead of its narrated mix.
+        /// <paramref name="duetLoop"/> records its duet loop instead of its narrated mix;
+        /// <paramref name="mosaicVariant"/> records the melody mosaic with that id instead.
         /// </summary>
-        public static void Begin(string? pathId, bool portrait, bool exitWhenDone, bool duetLoop = false)
+        public static void Begin(string? pathId, bool portrait, bool exitWhenDone, bool duetLoop = false, bool mosaicVariant = false)
         {
             if (phase != Phase.Idle)
             {
                 Debug.LogWarning("[record] a recording is already running (MusicHistory › Record narrated path › Stop recording).");
                 return;
             }
-            SessionState.SetString(RequestKey, $"{(portrait ? "v" : "h")}|{(exitWhenDone ? "1" : "0")}|{(duetLoop ? "d" : "n")}|{pathId ?? ""}");
+            SessionState.SetString(RequestKey, $"{(portrait ? "v" : "h")}|{(exitWhenDone ? "1" : "0")}|{(mosaicVariant ? "m" : duetLoop ? "d" : "n")}|{pathId ?? ""}");
             if (EditorApplication.isPlaying)
             {
                 Wait();
@@ -187,6 +215,7 @@ namespace MusicHistory.EditorTools
             vertical = request[0] == "v";
             exitWhenDone = request.Length > 1 && request[1] == "1";
             duet = request.Length > 2 && request[2] == "d";
+            mosaicMix = request.Length > 2 && request[2] == "m";
             requestedId = request.Length > 3 && request[3].Length > 0 ? request[3] : null;
             width = vertical ? 1080 : 1920;
             height = vertical ? 1920 : 1080;
@@ -224,6 +253,11 @@ namespace MusicHistory.EditorTools
                         return;
                     }
                     loader = l;
+                    if (mosaicMix)
+                    {
+                        StartMosaic(l, now);
+                        return;
+                    }
                     path = Choose(l, requestedId, duet, out string why);
                     if (path == null)
                     {
@@ -258,14 +292,16 @@ namespace MusicHistory.EditorTools
                     if (l == null) { Finish("the viewer went away", 5); return; }
                     WalkthroughDirector d = l.Director;
                     MashupPlayer? mix = d.MashupAudio;
-                    bool mixReady = duet
+                    bool mixReady = mosaicMix
+                        ? d.CurrentMosaic == null || d.MosaicAudio == null || d.MosaicAudio.CurrentAudio != null || !d.CurrentMosaic.FileExists
+                        : duet
                         ? d.CurrentDuet == null || d.DuetAudio == null || d.DuetAudio.CurrentAudio != null || !d.CurrentDuet.FileExists
                         : d.CurrentMashup == null || mix == null || mix.CurrentAudio != null || !d.CurrentMashup.FileExists;
-                    bool narrationReady = duet || l.Narration == null || l.Narration.AllLoaded(l.Narration.CurrentPath);
+                    bool narrationReady = duet || mosaicMix || l.Narration == null || l.Narration.AllLoaded(l.Narration.CurrentPath);
                     if (!(mixReady && narrationReady) && now < deadline) return;
                     if (!mixReady) Debug.LogWarning("[record] the mix is still loading after 60 s; recording anyway.");
                     if (!narrationReady) Debug.LogWarning("[record] some narration WAVs are still loading after 60 s; recording anyway.");
-                    output = OutputBase(path!.Id, vertical, duet);
+                    output = mosaicMix ? OutputBase(mosaic!.Id, vertical, mosaicMix: true) : OutputBase(path!.Id, vertical, duet);
                     Directory.CreateDirectory(Path.GetDirectoryName(output)!);
                     StartRecorder();
                     resizeFrames = 0;
@@ -291,10 +327,12 @@ namespace MusicHistory.EditorTools
                     }
                     if (d.ActivePlayer != null) d.ActivePlayer.Paused = false;
                     d.Reframe(immediate: true);
-                    double seconds = duet && d.CurrentDuet != null ? duetLength
-                        : d.CurrentMashup != null ? d.CurrentMashup.Duration : path!.Seconds > 0 ? path.Seconds : 600;
+                    double seconds = mosaicMix && d.CurrentMosaic != null ? d.CurrentMosaic.Duration
+                        : duet && d.CurrentDuet != null ? duetLength
+                        : d.CurrentMashup != null ? d.CurrentMashup.Duration : path != null && path.Seconds > 0 ? path.Seconds : 600;
                     recordDeadline = now + seconds * 3 + 120;
-                    Debug.Log($"[record] recording '{path!.Id}'{(duet ? " duet loop" : "")} ({(vertical ? "vertical" : "horizontal")} {width}x{height}, {Fps} fps) to {output}.mp4");
+                    string what = mosaicMix ? $"melody mosaic '{mosaic!.Id}'" : $"'{path!.Id}'{(duet ? " duet loop" : "")}";
+                    Debug.Log($"[record] recording {what} ({(vertical ? "vertical" : "horizontal")} {width}x{height}, {Fps} fps) to {output}.mp4");
                     phase = Phase.Recording;
                     return;
                 }
@@ -320,7 +358,8 @@ namespace MusicHistory.EditorTools
                     }
                     else if (d.TourComplete || !d.IsTouring)
                     {
-                        tailEndFrame = Time.frameCount + Mathf.CeilToInt(TailSeconds * Fps);
+                        // The whole mix, then a moment of picture (a mosaic: about a second).
+                        tailEndFrame = Time.frameCount + Mathf.CeilToInt((mosaicMix ? MosaicTailSeconds : TailSeconds) * Fps);
                         phase = Phase.Tail;
                         return;
                     }
@@ -337,7 +376,7 @@ namespace MusicHistory.EditorTools
         {
             RecorderControllerSettings settings = ScriptableObject.CreateInstance<RecorderControllerSettings>();
             MovieRecorderSettings movie = ScriptableObject.CreateInstance<MovieRecorderSettings>();
-            movie.name = duet ? "MusicHistory duet loop" : "MusicHistory narrated path";
+            movie.name = mosaicMix ? "MusicHistory melody mosaic" : duet ? "MusicHistory duet loop" : "MusicHistory narrated path";
             movie.Enabled = true;
             movie.EncoderSettings = new CoreEncoderSettings
             {
@@ -371,6 +410,7 @@ namespace MusicHistory.EditorTools
             phase = Phase.Idle;
             loader = null;
             path = null;
+            mosaic = null;
             if (!exitWhenDone) return;
             exitWhenDone = false;
             if (EditorApplication.isPlaying)
@@ -388,11 +428,67 @@ namespace MusicHistory.EditorTools
         /// &lt;data&gt;/recordings/&lt;path id&gt;_&lt;format&gt;, or &lt;path id&gt;_duet_&lt;format&gt; for a duet loop
         /// (no extension: the Recorder adds .mp4).
         /// </summary>
-        public static string OutputBase(string pathId, bool portrait, bool duetLoop = false)
+        public static string OutputBase(string pathId, bool portrait, bool duetLoop = false, bool mosaicMix = false)
         {
             char[] bad = Path.GetInvalidFileNameChars();
             string safe = new(pathId.Select(c => bad.Contains(c) || c == '<' || c == '>' ? '_' : c).ToArray());
-            return Path.Combine(PipelinePaths.Data(), "recordings", $"{safe}{(duetLoop ? "_duet" : "")}_{(portrait ? "vertical" : "horizontal")}");
+            string variant = mosaicMix ? "_mosaic" : duetLoop ? "_duet" : "";
+            return Path.Combine(PipelinePaths.Data(), "recordings", $"{safe}{variant}_{(portrait ? "vertical" : "horizontal")}");
+        }
+
+        /// <summary>Chooses and starts the mosaic to record (paused while its mix loads).</summary>
+        static void StartMosaic(SongGraphLoader l, double now)
+        {
+            mosaic = ChooseMosaic(l, requestedId, out string why);
+            if (mosaic == null)
+            {
+                Finish(why, 3);
+                return;
+            }
+            EditorPrefs.SetString(LastMosaicPref, mosaic.Id);
+            WalkthroughDirector d = l.Director;
+            l.Layout!.RecordingMode = true;
+            d.ApplesToApples = false;
+            if (l.MelodyGraph != null) l.MelodyGraph.SetUserVisible(true);
+            if (d.IsTouring) d.Exit();
+            if (!l.Paths!.PlayMosaic(mosaic.Id))
+            {
+                Finish($"mosaic '{mosaic.Id}' could not start ({l.Paths.Notice})", 3);
+                return;
+            }
+            // Hold the start while the mix loads.
+            if (d.ActivePlayer != null) d.ActivePlayer.Paused = true;
+            phase = Phase.Loading;
+            deadline = now + 60;
+        }
+
+        /// <summary>The mosaic playing or selected in the mosaics list (play mode), else null (the last recorded, else the first).</summary>
+        static string? MenuMosaicId()
+        {
+            if (!EditorApplication.isPlaying) return null;
+            SongGraphLoader? l = Object.FindAnyObjectByType<SongGraphLoader>();
+            if (l == null || l.Director == null) return null;
+            if (l.Director.CurrentMosaic != null) return l.Director.CurrentMosaic.Id;
+            if (l.Paths != null && l.Paths.SelectedMosaic >= 0 && l.Paths.SelectedMosaic < l.Paths.Mosaics.Count) return l.Paths.Mosaics[l.Paths.SelectedMosaic].Id;
+            return null;
+        }
+
+        /// <summary><paramref name="id"/> exactly; else the mosaic recorded last, else the first playable one.</summary>
+        static Mosaic? ChooseMosaic(SongGraphLoader l, string? id, out string why)
+        {
+            IReadOnlyList<Mosaic> all = l.Mosaics.Mosaics;
+            string ids = string.Join(", ", all.Select(m => m.Id));
+            if (id != null)
+            {
+                Mosaic? exact = all.FirstOrDefault(m => m.Id == id);
+                why = exact == null ? $"no melody mosaic '{id}' in {l.Mosaics.SourcePath} ({l.Mosaics.Status}; mosaics: {ids})"
+                    : !exact.IsPlayable ? $"mosaic '{id}' cannot play here: {MosaicCatalog.WhyNotPlayable(exact)}" : "";
+                return why.Length == 0 ? exact : null;
+            }
+            string last = EditorPrefs.GetString(LastMosaicPref, "");
+            Mosaic? chosen = all.FirstOrDefault(m => m.Id == last && m.IsPlayable) ?? all.FirstOrDefault(m => m.IsPlayable);
+            why = chosen == null ? $"no playable melody mosaic ({l.Mosaics.Status}; {l.Mosaics.SourcePath})" : "";
+            return chosen;
         }
 
         static string? MenuPathId()

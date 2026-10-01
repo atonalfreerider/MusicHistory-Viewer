@@ -24,7 +24,13 @@ namespace MusicHistory.Walkthrough
         /// played from its prerendered recording preview. Chosen from the featured-paths panel (P),
         /// never by 1–4 or M.
         /// </summary>
-        Path
+        Path,
+        /// <summary>
+        /// A melody mosaic (data/audio/mosaics/mosaics.json, DESIGN.md §17): one mix played once —
+        /// the target's loop, the loop rebuilt from other songs' melodies, then harmonized. Chosen
+        /// from the featured-paths panel's mosaics (O), never by 1–4 or M.
+        /// </summary>
+        Mosaic
     }
 
     /// <summary>Where a family tour plays a song: the bars where the family's identity sounds in it.</summary>
@@ -61,8 +67,8 @@ namespace MusicHistory.Walkthrough
 
         public static List<int> Plan(SongGraphData data, TourMode mode, int? fromNode)
         {
-            // Path tours are planned from the featured-paths catalog, not from the graph.
-            if (data.Songs.Count == 0 || mode == TourMode.Path) return new List<int>();
+            // Path tours and mosaics are planned from their catalogs, not from the graph.
+            if (data.Songs.Count == 0 || mode == TourMode.Path || mode == TourMode.Mosaic) return new List<int>();
             if (mode == TourMode.Family)
                 return FamilyFor(data, fromNode, null) is int family ? Family(data, family) : new List<int>();
             int start = fromNode is int f && f >= 1 && f <= data.Songs.Count ? f : DefaultStart(data, mode);
