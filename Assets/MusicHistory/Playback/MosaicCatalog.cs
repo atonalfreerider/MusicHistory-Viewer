@@ -430,10 +430,10 @@ namespace MusicHistory.Playback
             return pct == 100 ? "original speed" : pct.ToString(CultureInfo.InvariantCulture) + "% speed";
         }
 
-        /// <summary>"Fireflies, 2009 · 3 semitones down · 84% speed · 4/4 notes match" (plain text).</summary>
+        /// <summary>"Fireflies, 2009 · 3 semitones down · 84% speed · 83% notes match" (plain text).</summary>
         public static string PieceCaption(MosaicPiece p) =>
             $"{(p.Year > 0 ? $"{p.Title}, {p.Year}" : p.Title)} · {ShiftText(p.ShiftSemitones)} · {SpeedText(p.TempoRatio)} · " +
-            $"{p.MatchedNotes}/{p.NotesCompared} notes match";
+            $"{MosaicCatalog.Percent(p.Match)} notes match";
 
         /// <summary>"Diana, 1957 · 3 semitones down · 75% speed · 86% consonant" (plain text).</summary>
         public static string HarmonyCaption(MosaicHarmony h) =>

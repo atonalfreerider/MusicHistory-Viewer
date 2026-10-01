@@ -24,7 +24,7 @@ namespace MusicHistory.Viewer
     ///
     /// While a mosaic plays the strip reads "Mosaic: &lt;target&gt; rebuilt from N songs", LOOP k / n,
     /// the section as three chips (original, mosaic, harmony; a click jumps there), what is heard
-    /// ("Fireflies, 2009 · 3 semitones down · 84% speed · 4/4 notes match"), the key, BPM,
+    /// ("Fireflies, 2009 · 3 semitones down · 84% speed · 83% notes match"), the key, BPM,
     /// coverage and match, and the whole mix on the time bar with its sections marked.
     /// </summary>
     public sealed partial class FeaturedPathsPanel
@@ -609,7 +609,7 @@ namespace MusicHistory.Viewer
                         MosaicPiece p = m.Pieces[st.Piece];
                         what = $"<color={Muted}>Piece {p.Index + 1}/{m.Pieces.Count}</color>  " +
                                $"<b><color={UiKit.Hex(MelodyGraphPanel.MosaicColor(p.Song))}>{GraphHud.Esc(p.Title)}</color></b>{(p.Year > 0 ? $", {p.Year}" : "")}" +
-                               $"{dot}{Mosaic.ShiftText(p.ShiftSemitones)}{dot}{Mosaic.SpeedText(p.TempoRatio)}{dot}{p.MatchedNotes}/{p.NotesCompared} notes match";
+                               $"{dot}{Mosaic.ShiftText(p.ShiftSemitones)}{dot}{Mosaic.SpeedText(p.TempoRatio)}{dot}{MosaicCatalog.Percent(p.Match)} notes match";
                     }
                     else what = $"<color={Muted}>between pieces: no song covers this beat · the faint line is the melody of</color> {GraphHud.Esc(m.Target.Title)}";
                     break;

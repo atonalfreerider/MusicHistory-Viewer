@@ -169,7 +169,10 @@ namespace MusicHistory.EditorTools
             Rect wr = hud.ScreenRect(hud.WheelRect, width, height);
             float scale = hud.ScaleFor(width, height);
             (float a0, float a1) = ring.Arcs[cur];
-            float mid = (a0 + a1) * .5f * Mathf.Deg2Rad;
+            float midDeg = (a0 + a1) * .5f;
+            if (a1 - a0 > ChordRingView.MaxGlowDegrees && !float.IsNaN(ring.PointerDegrees))
+                midDeg = Mathf.Clamp(ring.PointerDegrees, a0 + ChordRingView.MaxGlowDegrees * .5f, a1 - ChordRingView.MaxGlowDegrees * .5f);
+            float mid = midDeg * Mathf.Deg2Rad;
             Vector2 dir = new(Mathf.Sin(mid), -Mathf.Cos(mid));
             Vector2 centre = new(ring.Size * .5f, ring.Size * .5f);
             List<Vector2> samples = new();

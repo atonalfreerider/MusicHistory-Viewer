@@ -30,9 +30,9 @@ namespace MusicHistory.EditorTools
     /// <list type="bullet">
     /// <item>Pure: the mosaics.json v1 contract on an inline mosaic (sections, loops, beats, chords,
     /// notes, pieces, harmonies, songs and their colours), the clock (mix beat, loops, sections, piece
-    /// lookup), the notes as lines, the words ("3 semitones down · 84% speed · 4/4 notes match"),
+    /// lookup), the notes as lines, the words ("3 semitones down · 84% speed · 83% notes match"),
     /// contract violations, malformed and missing files; the real data/audio/mosaics/mosaics.json
-    /// (every mix there, every piece's match a whole number of notes).</item>
+    /// (every mix there, every piece's match a rate with its notes heard).</item>
     /// <item>Scene, for a synthetic catalog built from the graph's songs (always), the real
     /// mosaics.json (when written) and -validationMosaics &lt;file&gt;: O opens the mosaics list (target,
     /// number of songs), the selection lights its songs; Enter plays it (no narration); the whole
@@ -201,11 +201,11 @@ namespace MusicHistory.EditorTools
             // The words.
             bool words = Mosaic.ShiftText(-3) == "3 semitones down" && Mosaic.ShiftText(1) == "1 semitone up" && Mosaic.ShiftText(0) == "same key" &&
                          Mosaic.SpeedText(.84) == "84% speed" && Mosaic.SpeedText(1.004) == "original speed" &&
-                         Mosaic.PieceCaption(m.Pieces[0]) == "Fireflies, 2009 · 3 semitones up · 84% speed · 4/4 notes match" &&
-                         Mosaic.PieceCaption(m.Pieces[2]) == "Third Source, 1978 · same key · original speed · 4/5 notes match" &&
+                         Mosaic.PieceCaption(m.Pieces[0]) == $"Fireflies, 2009 · 3 semitones up · 84% speed · {MosaicCatalog.Percent(m.Pieces[0].Match)} notes match" &&
+                         Mosaic.PieceCaption(m.Pieces[2]) == $"Third Source, 1978 · same key · original speed · {MosaicCatalog.Percent(m.Pieces[2].Match)} notes match" &&
                          Mosaic.HarmonyCaption(m.Harmonies[1]) == "Lower Voice, 2001 · 3 semitones down · 125% speed · 80% consonant" &&
                          m.StripTitle == "Mosaic: Target Song rebuilt from 3 songs";
-            report.Check("mosaic words: 'Fireflies, 2009 · 3 semitones up · 84% speed · 4/4 notes match', the harmony voices, 'Mosaic: X rebuilt from N songs'",
+            report.Check("mosaic words: 'Fireflies, 2009 · 3 semitones up · 84% speed · 100% notes match', the harmony voices, 'Mosaic: X rebuilt from N songs'",
                 words, $"{Mosaic.PieceCaption(m.Pieces[0])} | {Mosaic.HarmonyCaption(m.Harmonies[1])} | {m.StripTitle}");
             report.Check("mosaic binding: a target in the graph makes it playable; one that is not says why",
                 c.Bind(w => w == "Q10" ? 7 : (int?)null) == 1 && m.IsPlayable && m.Target.NodeId == 7 && m.Songs[1].NodeId == 0 &&
@@ -251,12 +251,11 @@ namespace MusicHistory.EditorTools
                 for (int k = 0; k < m.Loops; k++)
                     if (m.SectionOfLoop(k) != m.SectionIndexAt(m.LoopStartSeconds(k) + 1e-3)) bad.Add($"{m.Id}: loop {k + 1} starts in section {m.SectionIndexAt(m.LoopStartSeconds(k))}");
                 foreach (MosaicPiece p in m.Pieces)
-                    if (Math.Abs(p.Match * p.NotesCompared - Math.Round(p.Match * p.NotesCompared)) > .02) bad.Add($"{m.Id} '{p.Title}': match {p.Match} of {p.NotesCompared} notes");
-                double covered = m.Pieces.Sum(p => p.TargetNotes) / (double)Math.Max(1, m.Notes.Count);
-                if (Math.Abs(covered - m.Coverage) > .002) bad.Add($"{m.Id}: the pieces' spans hold {covered:0.####} of the notes, coverage says {m.Coverage}");
+                    if (!(p.Match > 0 && p.Match <= 1) || p.Notes.Count == 0) bad.Add($"{m.Id} '{p.Title}': match {p.Match}, {p.Notes.Count} notes");
+                if (!(m.Coverage > 0 && m.Coverage <= 1)) bad.Add($"{m.Id}: coverage {m.Coverage}");
                 if (m.Songs.Count > MelodyGraphPanel.MosaicColorCount + 1) bad.Add($"{m.Id}: {m.Songs.Count} songs, more than the colours");
             }
-            report.Check("mosaics.json (real): the mix beat ends with the last loop, every loop starts in its section, every piece's match is a whole number of notes, the spans hold the coverage, a colour per song",
+            report.Check("mosaics.json (real): the mix beat ends with the last loop, every loop starts in its section, every piece's match a rate with notes heard, the coverage a share, a colour per song",
                 bad.Count == 0, string.Join(" | ", bad.Take(5)));
         }
 
