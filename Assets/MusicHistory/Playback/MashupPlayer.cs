@@ -42,6 +42,11 @@ namespace MusicHistory.Playback
         [Tooltip("Play the audio but keep time on the main-thread clock (tests).")]
         public bool ForceMainClock;
         [Range(0f, 1.5f)] public float Volume = 1f;
+        /// <summary>
+        /// Linear gain under a narration cue (<see cref="NarrationPlayer"/> moves it with its duck
+        /// envelope; 1 = not ducked). Multiplies <see cref="Volume"/>; never touches the clock.
+        /// </summary>
+        [NonSerialized] public float DuckGain = 1f;
 
         public float MorphBars { get; set; } = 2f;
         /// <summary>Ignored: the mix has no normalized version (the walkthrough plays MIDI for "compare").</summary>
@@ -343,8 +348,11 @@ namespace MusicHistory.Playback
 
         void ApplyVolume()
         {
-            if (source != null) source.volume = Mathf.Clamp01(Volume * gain * pauseGain);
+            if (source != null) source.volume = Mathf.Clamp01(Volume * gain * pauseGain * Mathf.Clamp01(DuckGain));
         }
+
+        /// <summary>Applies <see cref="Volume"/>, the fades and <see cref="DuckGain"/> to the AudioSource now.</summary>
+        public void RefreshVolume() => ApplyVolume();
 
         void SetSourceTime(double seconds)
         {

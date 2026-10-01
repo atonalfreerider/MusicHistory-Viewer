@@ -513,7 +513,8 @@ namespace MusicHistory.Viewer
         {
             float scale = loader != null && loader.Hud != null ? loader.Hud.ScaleFor(width, height) : height / 1080f;
             float left = width * .5f - PanelWidth * .5f * scale;
-            float bottom = PanelBottom * scale;
+            // Where the panel actually sits (ViewerLayout raises it in the vertical layout).
+            float bottom = (root != null ? panel.anchoredPosition.y : PanelBottom) * scale;
             return new Vector2(left + p.x * scale, bottom + (PanelHeight - p.y) * scale);
         }
 
@@ -794,13 +795,13 @@ namespace MusicHistory.Viewer
             }
         }
 
-        static string LegendEntry(MashupSong s, bool playing)
+        /// <summary>"1974  No Woman, No Cry": the playing melody's title bold, the backing's (changeovers) marked.</summary>
+        static string LegendEntry(MashupSong s, bool playing, bool backing = false)
         {
             string year = s.Year > 0 ? s.Year.ToString(CultureInfo.InvariantCulture) : "";
             string title = GraphHud.Esc(s.Title.Length > 0 ? s.Title : s.WorkId);
-            return playing
-                ? $"<color={GraphHud.Muted}>{year}</color>  <b>{title}</b>"
-                : $"{year}  {title}";
+            if (playing) return $"<color={GraphHud.Muted}>{year}</color>  <b>{title}</b>";
+            return backing ? $"{year}  {title} <size=80%>(backing)</size>" : $"{year}  {title}";
         }
     }
 }

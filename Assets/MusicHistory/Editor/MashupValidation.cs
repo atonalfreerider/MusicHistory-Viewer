@@ -354,8 +354,11 @@ namespace MusicHistory.EditorTools
                         if (l.Playing != vocals.Contains(l.Song)) graphWrong.Add($"t {t:0.0}: song {l.Song} playing {l.Playing}");
                     foreach (MelodyGraphPanel.DotView dot in graph.Dots)
                     {
-                        bool expected = vocals.Contains(dot.Song) && m.Songs[dot.Song].PitchAt(beat, out _, out _);
-                        if (dot.Active != expected) graphWrong.Add($"t {t:0.0}: dot {dot.Song} active {dot.Active}");
+                        // The vocals' lights, plus a dimmer one on the backing's own melody during a changeover.
+                        int backing = g.Kind == MashupSegmentKind.Changeover && !vocals.Contains(g.InstrumentalSong) ? g.InstrumentalSong : -1;
+                        bool expected = (vocals.Contains(dot.Song) || dot.Song == backing) && m.Songs[dot.Song].PitchAt(beat, out _, out _);
+                        if (dot.Active != expected || (dot.Active && dot.Backing != (dot.Song == backing)))
+                            graphWrong.Add($"t {t:0.0}: dot {dot.Song} active {dot.Active} backing {dot.Backing}");
                         if (!dot.Active) continue;
                         m.Songs[dot.Song].PitchAt(beat, out float p, out _);
                         worstDot = Math.Max(worstDot, (dot.Position - graph.PanelPoint(beat, p)).magnitude);
@@ -394,7 +397,7 @@ namespace MusicHistory.EditorTools
                 double target = first.Start + first.Length * .45;
                 for (int k = 0; k < 4000 && player.CurrentSeconds < target; k++) TickMashup(loader, .05f);
                 // On a sung note, so the light is at full strength.
-                for (int k = 0; k < 120 && !graph.Dots.Any(x => x.Active && x.Voiced); k++) TickMashup(loader, .05f);
+                for (int k = 0; k < 120 && !graph.Dots.Any(x => x.Active && x.Voiced && !x.Backing); k++) TickMashup(loader, .05f);
                 for (int k = 0; k < 30 && d.Flying; k++) TickMashup(loader, .05f);
                 panel.RefreshNowPlaying();
                 graph.Refresh();
@@ -410,13 +413,15 @@ namespace MusicHistory.EditorTools
                     stripOk, strip.Replace("\n", " / "));
                 report.Check($"{L}: the walkthrough text names the segment ('Changeover: X vocal over Y')",
                     d.HudText.Contains(WalkthroughDirector.SegmentDescription(m, first)), FirstLines(d.HudText, 3));
-                MelodyGraphPanel.DotView? light = graph.Dots.FirstOrDefault(x => x.Active && x.Voiced);
+                MelodyGraphPanel.DotView? light = graph.Dots.FirstOrDefault(x => x.Active && x.Voiced && !x.Backing);
                 MelodyGraphPanel.LineView? playingLine = graph.Lines.FirstOrDefault(l => l.Song == first.VocalSong);
-                report.Check($"{L}: mid-changeover the vocal's melody is the playing one (bright, thicker) with its light point; the others are muted",
+                report.Check($"{L}: mid-changeover the vocal's melody is the playing one (bright, thicker) with its light point; the backing's own melody a step below; the others are muted",
                     light != null && light.Song == first.VocalSong && playingLine != null && playingLine.Playing &&
                     graph.Lines.Where(l => l.Song != first.VocalSong).All(l => !l.Playing && l.Width < playingLine.Width) &&
+                    graph.BackingSong == first.InstrumentalSong && graph.Lines.Where(l => l.Backing).Select(l => l.Song).SequenceEqual(new[] { first.InstrumentalSong }) &&
+                    graph.Dots.Where(x => x.Active && x.Song != first.VocalSong).All(x => x.Backing && x.Song == first.InstrumentalSong) &&
                     graph.StripSong == first.InstrumentalSong && graph.VocalStripSong == first.VocalSong && graph.ChordText.Length > 0,
-                    $"light on {light?.Song}; strip {graph.StripSong}, vocal strip {graph.VocalStripSong}; chords {graph.ChordText}");
+                    $"light on {light?.Song}; backing {graph.BackingSong}; strip {graph.StripSong}, vocal strip {graph.VocalStripSong}; chords {graph.ChordText}");
                 MelodyLightRig? rig = graph.Lights;
                 UnityEngine.Rendering.Universal.UniversalAdditionalCameraData? rigData = rig != null
                     ? UnityEngine.Rendering.Universal.CameraExtensions.GetUniversalAdditionalCameraData(rig.Camera) : null;

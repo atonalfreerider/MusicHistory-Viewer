@@ -51,6 +51,10 @@ namespace MusicHistory.Viewer
         /// <summary>The walkthrough panel at the bottom is showing.</summary>
         public bool TourVisible => tour.Root.activeSelf;
         public Canvas Canvas => canvas;
+        /// <summary>The legend panel (top left; <see cref="ViewerLayout"/> moves it in the vertical layout).</summary>
+        public RectTransform LegendRect => legend.Rect;
+        /// <summary>The song info / edge card panel (top right).</summary>
+        public RectTransform InfoRect => info.Rect;
         /// <summary>More panels on this canvas that world labels keep clear of (point-anchored, active ones count).</summary>
         [NonSerialized] public Func<IReadOnlyList<RectTransform>>? ExtraPanels;
         bool legendHidden;
@@ -175,7 +179,7 @@ namespace MusicHistory.Viewer
                       : $"\n<color={Muted}>Mouse</color>  hover shows influences · click selects · right-drag looks · wheel dollies") +
                   $"\n<color={Muted}>Move</color>  W A S D, Q E (Shift = fast) · R reset view · L all labels · V secondary edges · F live layout (time locked) · T lyric themes" +
                   $"\n<color={Muted}>Walkthrough</color>  1 lineage · 2 subtree · 3 chronological{(lineage ? " · 4 family" : "")} · M next mode · Enter start · Space pause · N/→ next · B/← back · Esc exit · C compare in C / 120 BPM" +
-                  $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back · M melody graph (mashup mixes)"
+                  $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back · M melody graph (mashup mixes) · N narration on/off (narrated paths)"
                 : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths";
             SetText(legend, legendHidden ? "" : legendBody + help);
         }

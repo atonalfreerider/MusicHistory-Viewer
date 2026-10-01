@@ -458,10 +458,17 @@ namespace MusicHistory.Walkthrough
         }
 
         /// <summary>The camera frames the current songs again (the melody graph was shown or hidden).</summary>
-        public void Reframe()
+        public void Reframe() => Reframe(false);
+
+        /// <summary>As <see cref="Reframe()"/>; <paramref name="immediate"/> puts the camera there at once (no flight).</summary>
+        public void Reframe(bool immediate)
         {
             if (!IsTouring || CurrentClip == null) return;
             FlyTo(Loader.NodeById(CurrentClip.NodeId), StepPartner);
+            Camera? cam = Loader.ViewCamera;
+            if (!immediate || cam == null) return;
+            flyT = 1f;
+            cam.transform.SetPositionAndRotation(flyToPosition, flyToRotation);
         }
 
         // ------------------------------------------------------------------ mashup tours

@@ -52,6 +52,7 @@ next to `data/graph/` finds `data/songs/`.
 | C | Toggle "compare in C / 120 BPM": plays the normalized MIDI without the key/BPM glide. |
 | P · the "Featured paths" button (top centre) | Open the featured paths: curated walks through the graph played from recording previews (see below). |
 | M · the "Melody" button (while a path plays its mashup mix) | Show or hide the melody graph above the now-playing strip (see "Mashup mixes and the melody graph"). |
+| N (while a narrated path plays) | Narration on or off: the voice, the duck, the caption and the photo card (see "Narrated walkthroughs"). On a path without narration N still steps on; → always does. |
 
 Each walkthrough step does four things:
 
@@ -155,6 +156,55 @@ only by a dedicated orthographic camera that frames the panel (one unit = one re
 renders with its own post-processing and its own bloom volume (on layer 31, so the graph's bloom
 and look are untouched) into a texture that a RawImage adds onto the panel. The graph's camera
 neither renders layer 31 nor sees its volume.
+
+## Narrated walkthroughs (DESIGN §15)
+
+A featured path whose mashup has narration in `data/audio/narration/narration.json` (version 1,
+written by the pipeline's `narration` stage; `-musicHistoryNarration <file>` or the loader's
+`NarrationFile` picks another) is narrated while it plays its mix. The artist photos come from
+`data/images/artists.json` and `data/images/artists/<image id>.jpg` (`-musicHistoryArtists <file>`
+or `ArtistsFile`). Paths in both are under `MusicHistory.PipelinePaths.Data()`. A missing file
+leaves the paths unnarrated (the console says which).
+
+- **Voice and duck** (`Playback/NarrationPlayer.cs`). Each cue's WAV plays at its `at` time on the
+  mix clock (`MashupPlayer.CurrentSeconds`), on an AudioSource of its own child object. The mix is
+  the master: Pause pauses the voice, a seek inside the speaking line re-syncs it, drift over 0.15 s
+  is corrected, and a jump (Next, Back, a chip, Enter) stops a line the new time is not in. The line
+  the mix lands in starts when it lands within 1 s of its start; otherwise its caption shows and the
+  voice waits for the next cue. Stop silences it at once. While a line is heard, the mix is ducked to
+  the cue's `duck_db` through `MashupPlayer.DuckGain` with a smooth envelope (attack 0.15 s, release
+  0.6 s); without narration, between lines (after the release) and with narration off it is never
+  ducked. The WAVs of a path are decoded when it starts.
+- **Caption and photo card** (`Viewer/NarrationOverlay.cs`). The line shows as a subtitle (our own
+  narration, never lyrics), and the cue's image as a card with the photo, whom it shows and, always,
+  `Photo: <author>, <license> (Wikimedia Commons)` under it. Both fade and slide in and out. A photo
+  without a licence, or whose file is missing, is never shown. The strip's kicker says `NARRATED  N`.
+- **Layout** (`Viewer/ViewerLayout.cs`) follows `Screen.width` / `Screen.height` at runtime (a resized
+  Game view, the Recorder's output size). Horizontal keeps the layout above: the caption above the
+  melody graph (above the strip when the graph is hidden), the card in the column right of the strip
+  (beside the caption on 4:3), and the songs framed above the caption. Vertical (height more than 1.2
+  × width, e.g. 1080x1920) scales the canvases to a 1280-wide reference and stacks, from the top: the
+  graph view, the melody graph, the narration band (photo card left, caption right) and the
+  now-playing strip; the Paths button moves to the top right and the legend and song info start
+  under it.
+
+### Recording a narrated path
+
+**MusicHistory → Record narrated path → Horizontal 1920x1080** or **Vertical 1080x1920** records the
+path playing or selected in the featured-paths panel (in play mode), else the path recorded last,
+else the first narrated path with a mashup. It opens `Assets/Scenes/SongInfluenceGraph.unity` if
+needed, enters play mode, starts the tour paused while the mix and the narration load, starts the
+Unity Recorder (`com.unity.recorder` 5.1.7: Game view at the output size, constant 30 fps, H.264 MP4
+with the AudioListener's sound), lets the layout adapt (legend and Paths button hidden), plays the
+tour from the top and stops 1.5 s after it ends. **Stop recording** in the same menu stops early.
+The file is `<MusicHistory>/data/recordings/<path id>_<horizontal|vertical>.mp4`.
+
+From the command line (not `-batchmode`: the Recorder needs the Game view; the project must not be
+open in another editor), the editor quits when the file is written (exit code 0):
+
+```bash
+"$UNITY" -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.PathRecorder.Record -path <path id> -format vertical -logFile "$PWD/record.log"
+```
 
 ## Identity lineages (DESIGN §8b)
 
@@ -273,6 +323,9 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Assets/Resources/MelodyGlow.shader` | HDR sprite shader (intensity, configurable blend) for the melody graph's light points and their additive composite. |
 | `Assets/MusicHistory/Editor/Validation.cs`, `LineageValidation.cs`, `PlayModeBench.cs` | Headless checks (identity lineages in `LineageValidation.cs`), screenshots and the play-mode benchmark. |
 | `Assets/MusicHistory/Editor/PathsValidation.cs`, `MashupValidation.cs`, `PathsPlayMode.cs` | Featured paths and mashup mixes: edit-mode checks and screenshots, play-mode checks. |
+| `Playback/NarrationCatalog.cs`, `NarrationPlayer.cs` | `narration.json` v1 reader (cues, lookups on the mix clock, contract problems); the narration player (cue scheduling on the mix clock, voice AudioSource, duck envelope). |
+| `Viewer/ArtistImages.cs`, `NarrationOverlay.cs`, `ViewerLayout.cs` | `artists.json` reader and on-demand JPG textures, the credit line; the caption and photo card; the horizontal / vertical layout. |
+| `Assets/MusicHistory/Editor/NarrationValidation.cs`, `PathRecorder.cs` | Narration checks (no scene needed); recording a narrated path with the Unity Recorder. |
 | `Assets/MusicHistory/Contracts/` | Shared with the audio module (foundation, do not edit). |
 
 ## Performance (measured)
@@ -395,6 +448,19 @@ Mashup mixes are checked by `Validation.Run` and `Validation.RunPaths` too, and 
 # mashups.json when present, -validationMashups <file>, and a synthetic one built from the paths.
 # Writes melody_graph.png (mid-changeover), melody_graph_nobloom.png and mashup_validation.json.
 "$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.Validation.RunMashups -logFile "$PWD/mashups.log"
+```
+
+Narrated walkthroughs are checked on their own, without opening a scene (**MusicHistory → Run
+Narration Validation**, or):
+
+```bash
+# narration.json and artists.json parsing (fixtures; the real files too once the pipeline wrote
+# them: WAVs, photos with author and licence, cues inside their mix), cue scheduling on the mix
+# clock (start at 'at', pause, seeks into, before and inside a line, N off/on, Stop, a mashup
+# without narration never ducked), the duck envelope (0.15 s attack, 0.6 s release), the credit
+# line and on-demand JPG decoding, and the horizontal / vertical layout rects (no overlaps at
+# 1920x1080, 1080x1920 and six other sizes). Writes narration_validation.json.
+"$UNITY" -batchmode -projectPath "$PWD" -executeMethod MusicHistory.EditorTools.NarrationValidation.Run -logFile "$PWD/narration.log"
 ```
 
 `PathsPlayMode.Run` also plays a mashup in play mode (-validationMashups <file>, else the real

@@ -70,6 +70,10 @@ namespace MusicHistory.Viewer
         public string PathsFile = "";
         [Tooltip("Blank: -musicHistoryMashups <mashups.json>, else <repo>/data/audio/mashups/mashups.json.")]
         public string MashupsFile = "";
+        [Tooltip("Blank: -musicHistoryNarration <narration.json>, else <data>/audio/narration/narration.json.")]
+        public string NarrationFile = "";
+        [Tooltip("Blank: -musicHistoryArtists <artists.json>, else <data>/images/artists.json.")]
+        public string ArtistsFile = "";
 
         [Header("Labels")]
         [Range(0, 300)] public int AlwaysLabelledSongs = 40;
@@ -101,6 +105,16 @@ namespace MusicHistory.Viewer
         public MashupCatalog Mashups { get; private set; } = MashupCatalog.Empty("not loaded");
         /// <summary>The melody graph shown while a mashup plays (M).</summary>
         public MelodyGraphPanel? MelodyGraph { get; private set; }
+        /// <summary>The narrated walkthroughs (data/audio/narration/narration.json; empty when missing).</summary>
+        public NarrationCatalog NarrationCatalog { get; private set; } = NarrationCatalog.Empty("not loaded");
+        /// <summary>The artist photos the narration shows (data/images/artists.json; empty when missing).</summary>
+        public ArtistImages ArtistImages { get; private set; } = ArtistImages.Empty("not loaded");
+        /// <summary>Plays the narration of a narrated mashup and ducks the mix under it (N).</summary>
+        public NarrationPlayer? Narration { get; private set; }
+        /// <summary>The narration's caption and photo popup.</summary>
+        public NarrationOverlay? NarrationOverlay { get; private set; }
+        /// <summary>Horizontal / vertical HUD layout from the screen's shape.</summary>
+        public ViewerLayout? Layout { get; private set; }
         /// <summary>The glowing line through a previewed featured path.</summary>
         public RouteLine? RouteLine { get; private set; }
         public TimelineAxis Timeline { get; private set; } = null!;
@@ -249,6 +263,11 @@ namespace MusicHistory.Viewer
             UseCatalog(PathCatalog.Load(pathsFile), pathsReason);
             string mashupsFile = ResolveMashupsPath(MashupsFile, out string mashupsReason);
             UseMashups(MashupCatalog.Load(mashupsFile), mashupsReason);
+            string narrationFile = NarrationCatalog.ResolvePath(NarrationFile, out string narrationReason);
+            string artistsFile = ArtistImages.ResolvePath(ArtistsFile, out string artistsReason);
+            UseNarration(NarrationCatalog.Load(narrationFile), ArtistImages.Load(artistsFile), $"{narrationReason}; photos {artistsReason}");
+            Layout = GetOrAdd<ViewerLayout>();
+            Layout.Bind(this);
 
             if (cam != null) FrameOverview(cam);
             clock.Stop();
@@ -301,6 +320,28 @@ namespace MusicHistory.Viewer
             Debug.Log($"MusicHistory: mashups {Mashups.Status}; {Mashups.PlayableCount} playable; {where}" +
                       (reason.Length > 0 ? $" [{reason}]" : "") +
                       (Mashups.Problems.Count > 0 ? $"; {Mashups.Problems.Count} problems, first: {string.Join(" | ", Mashups.Problems.Take(3))}" : ""));
+        }
+
+        /// <summary>
+        /// The narrated walkthroughs (narration.json) and the artist photos (artists.json): the
+        /// narration follows the walkthrough's mashup mix; the overlay shows its caption and photos.
+        /// </summary>
+        public void UseNarration(NarrationCatalog catalog, ArtistImages images, string reason = "")
+        {
+            NarrationCatalog = catalog ?? NarrationCatalog.Empty("none");
+            ArtistImages.Release();
+            ArtistImages = images ?? ArtistImages.Empty("none");
+            Narration = GetOrAdd<NarrationPlayer>();
+            if (Director != null && Director.MashupAudio != null)
+                Narration.Bind(Director.MashupAudio, () => Director != null ? Director.CurrentMashup : null, NarrationCatalog);
+            else Narration.UseCatalog(NarrationCatalog);
+            NarrationOverlay = GetOrAdd<NarrationOverlay>();
+            NarrationOverlay.Build(this);
+            string where = NarrationCatalog.SourcePath.Length > 0 ? NarrationCatalog.SourcePath : "(in memory)";
+            Debug.Log($"MusicHistory: narration {NarrationCatalog.Status}; photos {ArtistImages.Status}; {where}" +
+                      (reason.Length > 0 ? $" [{reason}]" : "") +
+                      (NarrationCatalog.Problems.Count > 0 ? $"; {NarrationCatalog.Problems.Count} narration problems, first: {string.Join(" | ", NarrationCatalog.Problems.Take(3))}" : "") +
+                      (ArtistImages.Problems.Count > 0 ? $"; {ArtistImages.Problems.Count} photo problems, first: {string.Join(" | ", ArtistImages.Problems.Take(3))}" : ""));
         }
 
         void BindMashups()
@@ -550,6 +591,8 @@ namespace MusicHistory.Viewer
             graphRoot = null;
             if (Hud != null && Hud.Canvas != null) Discard(Hud.Canvas.gameObject);
             if (MelodyGraph != null) MelodyGraph.Discard();
+            if (NarrationOverlay != null) NarrationOverlay.Discard();
+            ArtistImages.Release();
             nodes.Clear();
             edges.Clear();
             pinned.Clear();
@@ -569,6 +612,7 @@ namespace MusicHistory.Viewer
         void OnDestroy()
         {
             GraphMaterials.Clear();
+            ArtistImages.Release();
         }
 
         /// <summary>The MusicHistory pipeline repository (see <see cref="MusicHistory.PipelinePaths"/>).</summary>

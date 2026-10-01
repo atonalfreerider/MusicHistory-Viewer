@@ -79,7 +79,16 @@ namespace MusicHistory.Viewer
         public EventSystem? Events => eventSystem;
         /// <summary>Normalized screen area the graph is framed into while the list is open.</summary>
         /// <remarks>The right margin leaves room for the labels, which sit to the right of their songs.</remarks>
-        public Rect FreeViewport => new((Margin + ListWidth + 24f) / 1920f, .07f, 1f - (Margin + ListWidth + 24f) / 1920f - .065f, .83f);
+        public Rect FreeViewport
+        {
+            get
+            {
+                // The vertical layout's canvas is 1280 reference pixels wide (ViewerLayout).
+                float width = loader != null && loader.Layout != null && loader.Layout.Format == ScreenFormat.Vertical ? ViewerLayout.VerticalCanvasWidth : 1920f;
+                float left = (Margin + ListWidth + 24f) / width;
+                return new Rect(left, .07f, 1f - left - .065f, .83f);
+            }
+        }
         /// <summary>A message shown under the list (why a path cannot play).</summary>
         public string Notice { get; private set; } = "";
 
@@ -642,6 +651,8 @@ namespace MusicHistory.Viewer
             if (strip != null && strip.gameObject.activeInHierarchy) visibleRects.Add(strip);
             if (loader != null && loader.MelodyGraph != null && loader.MelodyGraph.Showing && loader.MelodyGraph.PanelRect is RectTransform melody)
                 visibleRects.Add(melody);
+            // The narration caption and photo card (labels keep clear of them too).
+            if (loader != null && loader.NarrationOverlay != null) loader.NarrationOverlay.AddVisibleRects(visibleRects);
             return visibleRects;
         }
 
@@ -775,6 +786,10 @@ namespace MusicHistory.Viewer
             RefreshNowPlaying();
             return true;
         }
+
+        /// <summary>The path playing has a mashup with narration (data/audio/narration): N toggles it.</summary>
+        public bool NarrationAvailable =>
+            State == PanelState.Playing && loader != null && loader.Narration != null && Director.PathMashup is Mashup m && loader.Narration.For(m.Id) != null;
 
         /// <summary>A chip was clicked: jump to that step (it morphs from the song heard before).</summary>
         public void JumpTo(int step)
@@ -1205,7 +1220,8 @@ namespace MusicHistory.Viewer
             stripAccent.color = accent;
             stripKicker.color = accent;
             string state = d.TourComplete ? "PATH COMPLETE" : d.ActivePlayer != null && d.ActivePlayer.Paused ? "PAUSED" : "NOW PLAYING";
-            UiKit.SetText(stripKicker, $"{state} · FEATURED PATH · CONTINUOUS MIX");
+            string narration = NarrationAvailable ? (loader.Narration!.NarrationOn ? " · NARRATED  N" : " · NARRATION OFF  N") : "";
+            UiKit.SetText(stripKicker, $"{state} · FEATURED PATH · CONTINUOUS MIX{narration}");
             UiKit.SetText(stripTitle, GraphHud.Esc(p.Title));
 
             float right = StripWidth - Pad;
@@ -1394,6 +1410,10 @@ namespace MusicHistory.Viewer
                             return true;
                         case Key.Space:
                             PauseOrReplay();
+                            return true;
+                        case Key.N when NarrationAvailable:
+                            // A narrated path: N switches the narration (→ still steps on).
+                            loader.Narration!.Toggle();
                             return true;
                         case Key.N:
                         case Key.RightArrow:
