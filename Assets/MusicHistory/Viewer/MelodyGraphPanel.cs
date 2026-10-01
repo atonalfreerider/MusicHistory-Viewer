@@ -305,6 +305,8 @@ namespace MusicHistory.Viewer
         public int StripTonic => stripTonic;
         /// <summary>HDR intensity of the current chord's light on the strip.</summary>
         [Min(0f)] public float ChordGlow = .6f;
+        /// <summary>Widest stretch of the chord strip that glows at once (panel px).</summary>
+        public const float MaxChordGlowWidth = 160f;
 
         public string PitchLabelText
         {
@@ -662,6 +664,12 @@ namespace MusicHistory.Viewer
                 // Its light, on the panel (clipped to the plot while the graph pans).
                 float shift = scrolling ? ContentShift : 0f;
                 float g0 = Mathf.Max(plot.xMin, x0 + shift), g1 = Mathf.Min(plot.xMax, x1 + shift);
+                // A long chord (a one-chord loop) glows only near the playhead, not across the plot.
+                if (g1 - g0 > MaxChordGlowWidth)
+                {
+                    float head = Mathf.Clamp(PlayheadX, g0 + MaxChordGlowWidth * .5f, g1 - MaxChordGlowWidth * .5f);
+                    (g0, g1) = (head - MaxChordGlowWidth * .5f, head + MaxChordGlowWidth * .5f);
+                }
                 bool glow = g1 - g0 > 1f;
                 // As bright for every chord: its brightest channel reaches ChordGlow (dark minor colours too).
                 Color glowColor = ChordPalette.Of(chord, stripTonic);

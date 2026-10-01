@@ -293,6 +293,8 @@ namespace MusicHistory.Viewer
         public const float GlowPad = 110f;
         /// <summary>HDR intensity of the current chord's light (its bloom camera's threshold is 0.4).</summary>
         public float GlowIntensity = 1.3f;
+        /// <summary>Widest arc that glows at once (degrees); a longer chord glows around the hand.</summary>
+        public const float MaxGlowDegrees = 90f;
         public float NameSize = 19f, CurrentNameSize = 22f, MinNameSize = 12f, CenterSize = 34f;
 
         public RectTransform Root { get; }
@@ -599,6 +601,13 @@ namespace MusicHistory.Viewer
             if (on)
             {
                 (float a0, float a1) = arcs[current];
+                // A long chord (a one-chord loop fills the whole ring) glows only around the hand,
+                // so the light stays a point of colour rather than flooding the wheel's square.
+                if (a1 - a0 > MaxGlowDegrees && !float.IsNaN(PointerDegrees))
+                {
+                    float mid = Mathf.Clamp(PointerDegrees, a0 + MaxGlowDegrees * .5f, a1 - MaxGlowDegrees * .5f);
+                    (a0, a1) = (mid - MaxGlowDegrees * .5f, mid + MaxGlowDegrees * .5f);
+                }
                 (float inner, float outer) = RadiiOf(current);
                 Color col = chords[current].ColorIn(tonic);
                 // As bright for every chord: its brightest channel reaches GlowIntensity (dark minor colours too).

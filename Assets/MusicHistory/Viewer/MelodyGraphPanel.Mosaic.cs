@@ -329,6 +329,12 @@ namespace MusicHistory.Viewer
                 UiKit.Show(chordUnderline, true);
                 UiKit.Place(chordUnderline.rectTransform, x0 + 1f, ChordTop + ChordStripHeight + 2f, Mathf.Max(1f, x1 - x0 - 2f), 3f);
                 float g0 = Mathf.Max(plot.xMin, x0 + ContentShift), g1 = Mathf.Min(plot.xMax, x1 + ContentShift);
+                // A long chord (a one-chord loop) glows only near the playhead, not across the plot.
+                if (g1 - g0 > MaxChordGlowWidth)
+                {
+                    float head = Mathf.Clamp(PlayheadX, g0 + MaxChordGlowWidth * .5f, g1 - MaxChordGlowWidth * .5f);
+                    (g0, g1) = (head - MaxChordGlowWidth * .5f, head + MaxChordGlowWidth * .5f);
+                }
                 bool glow = g1 - g0 > 1f;
                 Color glowColor = ChordPalette.Of(chord, stripTonic);
                 rig?.SetGlowRect(0, glow, new Rect(g0 + 1f, ChordTop + 1f, Mathf.Max(1f, g1 - g0 - 2f), ChordStripHeight - 2f), 6f,
