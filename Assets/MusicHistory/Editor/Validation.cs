@@ -81,7 +81,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             WriteJson(report, Path.Combine(outDir, "validation.json"));
             Debug.Log($"[validation] {report.Checks.Count - report.Failures}/{report.Checks.Count} checks passed; report in {outDir}");
@@ -101,6 +101,7 @@ namespace MusicHistory.EditorTools
             report.Text("unity_version", Application.unityVersion);
             report.Text("graphics_device", SystemInfo.graphicsDeviceName + " / " + SystemInfo.graphicsDeviceType);
             report.Text("db", dbPath);
+            ValidateChordVocabulary(report);
 
             EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
             SongGraphLoader? loader = Object.FindAnyObjectByType<SongGraphLoader>();
@@ -250,6 +251,8 @@ namespace MusicHistory.EditorTools
                 .Where(e => !e.IsTree).All(e => e.Shown == (e.Source == focus || e.Target == focus)));
             // The simplified song card (title, artist · year, key · BPM, the chord ring); the lineage moved to the edge card.
             CheckSongCard(report, loader, focus, "hover");
+            if (loader.Hud.WheelVisible) CheckWheelPlacement(report, "hover", loader, width, height);
+            report.Check("hover: hovering never resizes a bubble", loader.Nodes.All(x => !x.Highlighted));
             CheckHudSemantics(report, loader, focus, "hover");
             // Frame the focus with its neighbourhood for the screenshot.
             List<(Vector3, float)> items = new() { (focus.transform.position, focus.Radius) };
@@ -321,6 +324,10 @@ namespace MusicHistory.EditorTools
                     $"start {expected.StartSemitones:+0;-0;0} st, tempo ×{expected.StartTempoRatio:0.000}, {expected.MorphBeats} beats");
                 InfluenceEdge? edge = loader.NodeById(clip.NodeId).TreeEdge;
                 report.Check("tour: tree edge starts collapsed", edge != null && edge.VisibleFraction < .01f);
+                SongNode playing2 = loader.NodeById(clip.NodeId);
+                report.Check("tour: the playing song's bubble grows to 3x (its parent, glowing faintly, keeps its size)",
+                    playing2.Highlighted && Mathf.Approximately(playing2.TargetRadius, 3f * playing2.Radius) &&
+                    loader.Nodes.Where(n => n != playing2).All(n => !n.Highlighted), $"'{playing2.Song.Title}' scale {playing2.Scale:0.##} → 3");
                 for (int i = 0; i < 12; i++) TickDirector(director, .1f);
                 report.Check("tour: camera flight in progress", director.Flying);
                 string mid = Path.Combine(outDir, "walkthrough_flight.png");
@@ -489,27 +496,30 @@ namespace MusicHistory.EditorTools
         }
 
         /// <summary>
-        /// The song card at the top right: title, artist · year, key · BPM, and the song's main loop as a
-        /// chord ring (one arc per chord in the chord palette, roman numerals, the start at 12 o'clock,
-        /// no hand while nothing plays); none of the old lineage / identity / canon text.
+        /// The song card is the chord wheel alone (top right): the song's main loop as one arc per
+        /// chord in Resonance's tonal colours against the song's tonic (C, or A for a minor song), each
+        /// named by what it is to the key, the start at 12 o'clock, no hand and nothing muted or lit
+        /// while nothing plays; no title, artist, key or lineage text (InfoText keeps a plain summary).
         /// </summary>
         static void CheckSongCard(Report report, SongGraphLoader loader, SongNode node, string view)
         {
             GraphHud hud = loader.Hud;
+            hud.ForceUpdate();
             string info = hud.InfoText;
             List<RingChord> loop = MainLoop.Parse(node.Song.MainLoop);
             ChordRingView ring = hud.Ring;
+            int tonic = ChordKey.ForMode(node.Song.Minor);
             bool text = hud.SongCardVisible && hud.CardSong == node && info.Contains(node.Song.Title) && info.Contains(node.Song.KeyName) &&
-                        info.Contains("BPM") && info.Contains(node.Song.Year.ToString(CultureInfo.InvariantCulture)) &&
-                        !info.Contains("Lineage") && !info.Contains("Main loop") && !info.Contains("canon rank") && !info.Contains("bits") && !info.Contains("Shares:");
+                        !info.Contains("Lineage") && !info.Contains("canon rank") && !info.Contains("bits") && !info.Contains("Shares:");
             double gaps = loop.Count > 1 ? loop.Count * ChordRingView.GapDegrees : 0;
             bool ringOk = loop.Count == 0
                 ? !ring.Visible
-                : ring.Visible && ring.Chords.Count == loop.Count && ring.StartMarked && float.IsNaN(ring.PointerDegrees) &&
-                  ring.Chords.Select((c, i) => c.Roman == loop[i].Roman && c.Color == ChordPalette.Of(loop[i].RootPc, loop[i].Minor)).All(ok => ok) &&
-                  ring.Arcs.All(x => x.end > x.start) && Math.Abs(ring.Arcs.Sum(x => x.end - x.start) + gaps - 360) < .5;
-            report.Check($"{view}: the song card shows title, artist · year, key · BPM and the main loop as a chord ring (one arc per chord in the chord palette, the start at 12 o'clock); no lineage text",
-                text && ringOk, $"'{node.Song.MainLoop ?? "(no loop)"}' → {ring.RomanText}; {FirstLines(info, 4)}");
+                : ring.Visible && ring.Chords.Count == loop.Count && ring.StartMarked && float.IsNaN(ring.PointerDegrees) && ring.Current == -1 && ring.TonicPc == tonic &&
+                  ring.Chords.Select((c, i) => c.Roman == loop[i].Roman && ring.DrawnColor(i) == loop[i].ColorIn(tonic) &&
+                                               ring.Names[i] == ChordNames.Plain(ChordNames.Name(loop[i].RootPc, tonic, loop[i].Quality), ChordNames.Suffix(loop[i].Quality))).All(ok => ok) &&
+                  ring.Arcs.All(x => x.end > x.start) && Math.Abs(ring.Arcs.Sum(x => x.end - x.start) + gaps - 360) < .5 && ring.GlowLevel == 0f && ring.CenterText.Length == 0;
+            report.Check($"{view}: the song card is the chord wheel alone: the main loop's arcs in Resonance's colours against the song's tonic, named ('Key', 'Fifth' …), full colour and unlit while nothing plays; no song text",
+                text && ringOk, $"'{node.Song.MainLoop ?? "(no loop)"}' ({(node.Song.Minor ? "minor" : "major")}) → {ring.LabelText}");
         }
 
         static void TickDirector(WalkthroughDirector director, float dt)

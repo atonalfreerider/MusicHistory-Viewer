@@ -43,6 +43,12 @@ namespace MusicHistory.Playback
         public readonly List<NarrationSource> Sources = new();
         /// <summary>Sentences whose pitch falls at the end, of how many (the narration stage's check).</summary>
         public int InflectionFalls, InflectionOf;
+        /// <summary>
+        /// A captions-only cue (DESIGN.md §15): no voice was synthesized, so "file", "duck_db" and
+        /// "inflection" are all null and <see cref="Seconds"/> is the reading time. It has no WAV
+        /// (none is expected) and no duck (<see cref="DuckDb"/> 0); its caption and photo show as usual.
+        /// </summary>
+        public bool CaptionsOnly;
 
         public double End => At + Math.Max(0, Seconds);
         public bool Contains(double t) => t >= At && t < End;
@@ -307,7 +313,9 @@ namespace MusicHistory.Playback
                     continue;
                 }
                 if (cue.Text.Length == 0) c.Problems.Add($"{at}: no text");
-                double duck = MiniJson.Num(o, "duck_db", double.NaN);
+                // Captions only: file, duck_db and inflection all null (or absent) together.
+                cue.CaptionsOnly = IsNull(o, "file") && IsNull(o, "duck_db") && IsNull(o, "inflection");
+                double duck = cue.CaptionsOnly ? 0 : MiniJson.Num(o, "duck_db", double.NaN);
                 if (double.IsNaN(duck))
                 {
                     c.Problems.Add($"{at}: no duck_db (using {DefaultDuckDb} dB)");
@@ -324,7 +332,8 @@ namespace MusicHistory.Playback
                     duck = MinDuckDb;
                 }
                 cue.DuckDb = duck;
-                if (cue.File.Length == 0) c.Problems.Add($"{at}: no file");
+                if (cue.CaptionsOnly) cue.File = "";   // no WAV, none expected
+                else if (cue.File.Length == 0) c.Problems.Add($"{at}: no file");
                 else
                 {
                     try
@@ -364,6 +373,8 @@ namespace MusicHistory.Playback
                     c.Problems.Add($"{ctx}: cue '{path.Cues[i].Id}' ({F(path.Cues[i].At)}–{F(path.Cues[i].End)} s) runs into '{path.Cues[i + 1].Id}' at {F(path.Cues[i + 1].At)} s");
             return path;
         }
+
+        static bool IsNull(Dictionary<string, object?> o, string key) => !o.TryGetValue(key, out object? v) || v == null;
 
         static string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
     }

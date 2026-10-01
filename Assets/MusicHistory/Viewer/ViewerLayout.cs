@@ -43,11 +43,23 @@ namespace MusicHistory.Viewer
         public readonly float CaptionFont, CaptionMinFont, SubjectFont, CreditFont;
         /// <summary>Horizontal only: no room right of the strip, so the card sits beside the caption (at the strip's right edge).</summary>
         public readonly bool CardBesideCaption;
+        /// <summary>
+        /// The chord wheel's square (<see cref="GraphHud.WheelSize"/>): top right in landscape; top
+        /// centre in portrait (centred in the room right of the legend while the legend shows).
+        /// </summary>
+        public readonly Rect Wheel;
+        /// <summary>The playing path's name, top left: its top edge and width (it grows down if it wraps).</summary>
+        public readonly Rect PathTitle;
+        public readonly float PathTitleFont;
 
         public LayoutFrame(ScreenFormat format, Vector2 canvas, float scale, Rect strip, Rect melody, Rect button, Rect legend, Rect info,
             Rect captionSlot, Rect cardSlot, Rect band, Rect mashupView, Rect tourView,
-            float captionFont, float captionMinFont, float subjectFont, float creditFont, bool cardBesideCaption)
+            float captionFont, float captionMinFont, float subjectFont, float creditFont, bool cardBesideCaption,
+            Rect wheel = default, Rect pathTitle = default, float pathTitleFont = 44f)
         {
+            Wheel = wheel;
+            PathTitle = pathTitle;
+            PathTitleFont = pathTitleFont;
             Format = format;
             Canvas = canvas;
             Scale = scale;
@@ -97,8 +109,11 @@ namespace MusicHistory.Viewer
     /// panning under a centred playhead, <see cref="MelodyGraphPanel.PortraitPanelHeight"/>), the
     /// narration band (photo card beside the caption; only while a narrated mix plays, otherwise the
     /// graph sits right above the strip) and the now-playing strip; the Paths button moves to the
-    /// top right and the legend / song info start under it. <see cref="RecordingMode"/> hides the
-    /// legend and the Paths button.
+    /// top right and the legend / edge card start under it. The chord wheel (2.5 times the old
+    /// song card's ring, no backdrop) floats top right in landscape and top centre in portrait (in
+    /// the room right of the legend while the legend shows); the songs are framed clear of it. A
+    /// playing path's name sits top left in both. <see cref="RecordingMode"/> hides the legend and
+    /// the Paths button.
     /// </summary>
     [DefaultExecutionOrder(50)]
     public sealed class ViewerLayout : MonoBehaviour
@@ -118,8 +133,12 @@ namespace MusicHistory.Viewer
         public const float HorizontalCardMaxHeight = 470f;
         /// <summary>Legend / song info top offset below the top edge in the vertical layout (under the Paths button).</summary>
         public const float VerticalPanelTop = 72f;
-        /// <summary>Usual height of the legend and the song info (the vertical framing keeps clear of it).</summary>
+        /// <summary>Usual height of the legend and the edge card (the vertical framing keeps clear of it).</summary>
         public const float NominalPanelHeight = 330f;
+        /// <summary>The path name's largest and smallest type (reference px).</summary>
+        public const float PathTitleMax = 46f, PathTitleMin = 26f, PathTitleHeight = 56f;
+        /// <summary>The path name's top edge below the screen's top (reference px).</summary>
+        public const float PathTitleTop = 12f;
 
         [Tooltip("Hide the legend and the Paths button (video recording).")]
         public bool RecordingMode;
@@ -184,6 +203,7 @@ namespace MusicHistory.Viewer
             float melodyH = MelodyGraphPanel.HeightFor(f == ScreenFormat.Vertical);
             Rect strip = new(W * .5f - stripW * .5f, StripBottom, stripW, stripH);
             float stripTop = strip.yMax;
+            float S = GraphHud.WheelSize;
 
             if (f == ScreenFormat.Vertical)
             {
@@ -193,19 +213,31 @@ namespace MusicHistory.Viewer
                 Rect button = new(W - Margin - 252f, H - Margin - 40f, 252f, 40f);
                 Rect legend = new(Margin, H - VerticalPanelTop - legendHeight, 660f, legendHeight);
                 Rect info = new(W - Margin - 540f, H - VerticalPanelTop - infoHeight, 540f, infoHeight);
+                // The wheel: top centre, under the Paths button's row; while the legend shows, centred
+                // in the room right of it (or under it when there is no room).
+                Rect centred = new(W * .5f - S * .5f, H - VerticalPanelTop - S, S, S);
+                Rect wheel = centred;
+                if (legendHeight > 0 && centred.Overlaps(legend))
+                {
+                    float room = W - Margin - legend.xMax;
+                    wheel = room >= S + 16f
+                        ? new Rect(legend.xMax + Mathf.Max(16f, (room - S) * .5f), centred.yMin, S, S)
+                        : new Rect(centred.xMin, legend.yMin - 16f - S, S, S);
+                }
+                Rect title = new(Margin, H - PathTitleTop - PathTitleHeight, Mathf.Max(200f, button.xMin - 24f - Margin), PathTitleHeight);
                 Rect card = new(band.xMin, band.yMin, VerticalCardWidth, band.height);
                 Rect caption = photo
                     ? new Rect(card.xMax + 24f, band.yMin, band.xMax - card.xMax - 24f, band.height)
                     : band;
-                // Under the top panels at their usual height (not their live height: the framing
-                // would move at every song change).
-                float top = H - VerticalPanelTop - NominalPanelHeight - 16f;
+                // Under the top panels and the centred wheel at their usual size (not their live
+                // height: the framing would move at every song change).
+                float top = Mathf.Min(H - VerticalPanelTop - NominalPanelHeight, centred.yMin) - 16f;
                 float y0 = (melodyRect.yMax + 30f) / H;
                 Rect mashupView = new(.05f, y0, .9f, Mathf.Max(.12f, top / H - y0));
                 float tourY0 = ((narrated ? band.yMax : stripTop) + 30f) / H;
                 Rect tourView = new(.05f, tourY0, .9f, Mathf.Max(.12f, top / H - tourY0));
                 return new LayoutFrame(f, c, scale, strip, melodyRect, button, legend, info, caption, card, band, mashupView, tourView,
-                    38f, 28f, 25f, 16f, false);
+                    38f, 28f, 25f, 16f, false, wheel, title, PathTitleMax);
             }
             else
             {
@@ -213,26 +245,39 @@ namespace MusicHistory.Viewer
                 Rect button = new(W * .5f - 126f, H - Margin - 40f, 252f, 40f);
                 Rect legend = new(Margin, H - Margin - legendHeight, 660f, legendHeight);
                 Rect info = new(W - Margin - 540f, H - Margin - infoHeight, 540f, infoHeight);
+                // The wheel: top right. The path's name: top left, up to the Paths button.
+                Rect wheel = new(W - Margin - S, H - Margin - S, S, S);
+                // Short, wide screens (21:9): nudge it right, into the margin, rather than touch the melody graph.
+                if (wheel.yMin < melodyRect.yMax + 8f && wheel.xMin < strip.xMax + 8f) wheel.x = Mathf.Min(W - S, strip.xMax + 8f);
+                Rect title = new(Margin, H - PathTitleTop - PathTitleHeight, Mathf.Max(200f, button.xMin - 24f - Margin), PathTitleHeight);
                 float captionBase = (melody ? melodyRect.yMax : stripTop) + 12f;
                 float captionTop = captionBase + HorizontalCaptionHeight;
-                float ceiling = infoHeight > 0 ? info.yMin - 12f : H - Margin;
+                // The photo card stays under the wheel's place (always reserved: it shows whenever a mix plays).
+                float ceiling = Mathf.Min(infoHeight > 0 ? info.yMin - 12f : H - Margin, wheel.yMin - 12f);
                 // The photo card: in the column right of the strip, under the song info; on
                 // narrower screens (4:3) beside the caption, at the strip's right edge.
                 float colLeft = strip.xMax + Margin, colW = W - Margin - colLeft;
                 bool beside = colW < 200f;
+                // Beside the caption (narrow screens): at the strip's right edge, under the wheel; at
+                // its left edge instead when the wheel leaves too little room (under the legend and
+                // the path's name).
+                float leftCeiling = Mathf.Min(legendHeight > 0 ? legend.yMin - 12f : H - Margin, title.yMin - 12f);
+                bool cardLeft = beside && ceiling - captionBase < 280f && leftCeiling - captionBase > ceiling - captionBase;
                 Rect card = beside
-                    ? new Rect(strip.xMax - HorizontalCardWidth, captionBase, HorizontalCardWidth, Mathf.Max(120f, Mathf.Min(HorizontalCardMaxHeight, ceiling - captionBase)))
+                    ? new Rect(cardLeft ? strip.xMin : strip.xMax - HorizontalCardWidth, captionBase, HorizontalCardWidth,
+                        Mathf.Max(120f, Mathf.Min(HorizontalCardMaxHeight, (cardLeft ? leftCeiling : ceiling) - captionBase)))
                     : new Rect(W - Margin - Mathf.Min(HorizontalCardWidth, colW), StripBottom, Mathf.Min(HorizontalCardWidth, colW),
                         Mathf.Max(120f, Mathf.Min(HorizontalCardMaxHeight, ceiling - StripBottom)));
-                // The caption spans the strip's width, clear of the card beside it and of a legend
-                // or song info tall enough to reach down to it (wide, short screens).
-                float left = strip.xMin, right = beside ? card.xMin - 24f : strip.xMax;
+                // The caption spans the strip's width, clear of the card beside it and of a legend,
+                // edge card or the wheel reaching down to it (wide, short screens).
+                float left = cardLeft ? card.xMax + 24f : strip.xMin, right = beside && !cardLeft ? card.xMin - 24f : strip.xMax;
                 if (legendHeight > 0 && legend.yMin < captionTop) left = Mathf.Max(left, legend.xMax + 16f);
                 if (infoHeight > 0 && info.yMin < captionTop) right = Mathf.Min(right, info.xMin - 16f);
+                if (wheel.yMin < captionTop) right = Mathf.Min(right, wheel.xMin - 16f);
                 if (right - left < 480f)
                 {
-                    left = strip.xMin;
-                    right = beside ? card.xMin - 24f : strip.xMax;
+                    left = cardLeft ? card.xMax + 24f : strip.xMin;
+                    right = beside && !cardLeft ? card.xMin - 24f : strip.xMax;
                 }
                 Rect caption = new(left, captionBase, right - left, HorizontalCaptionHeight);
                 Rect mashupView = baseMashup;
@@ -241,9 +286,24 @@ namespace MusicHistory.Viewer
                     float y0 = Mathf.Max(baseMashup.yMin, (captionBase + 100f) / H);
                     mashupView = new Rect(baseMashup.xMin, y0, baseMashup.width, Mathf.Max(.15f, baseMashup.yMax + .05f - y0));
                 }
-                return new LayoutFrame(f, c, scale, strip, melodyRect, button, legend, info, caption, card, caption, mashupView, baseTour,
-                    26f, 20f, 17f, 12.5f, beside);
+                // The songs are framed clear of the wheel (left of it, where the views reach its height).
+                Rect tourView = ClearOf(baseTour, wheel, W, H);
+                mashupView = ClearOf(mashupView, wheel, W, H);
+                return new LayoutFrame(f, c, scale, strip, melodyRect, button, legend, info, caption, card, caption, mashupView, tourView,
+                    26f, 20f, 17f, 12.5f, beside, wheel, title, PathTitleMax - 2f);
             }
+        }
+
+        /// <summary>
+        /// <paramref name="view"/> (normalized) narrowed so its right edge stays left of
+        /// <paramref name="obstacle"/> (reference px) when the view reaches up to it.
+        /// </summary>
+        static Rect ClearOf(Rect view, Rect obstacle, float W, float H)
+        {
+            if (view.yMax * H <= obstacle.yMin) return view;
+            float right = Mathf.Min(view.xMax, (obstacle.xMin - 16f) / W);
+            if (right - view.xMin < .2f) return view;
+            return Rect.MinMaxRect(view.xMin, view.yMin, right, view.yMax);
         }
 
         // ------------------------------------------------------------------ runtime
@@ -270,13 +330,17 @@ namespace MusicHistory.Viewer
                 baseTour = d.TourViewport;
                 baseMashup = d.MashupTourViewport;
             }
+            // The path's name and the legend as they will show this frame (the wheel's place depends on the legend).
+            l.Hud.RefreshPathTitle();
             Vector2Int screen = CurrentScreen();
             int w = screen.x, h = screen.y;
             bool narrated = l.Narration != null && l.Narration.NarrationOn && l.Narration.CurrentPath != null;
             bool melody = l.MelodyGraph != null && l.MelodyGraph.Showing;
             bool photo = l.NarrationOverlay != null && l.NarrationOverlay.CardShowing;
-            float legendH = l.Hud.LegendVisible ? l.Hud.LegendRect.sizeDelta.y : 0f;
-            float infoH = l.Hud.InfoVisible ? l.Hud.InfoRect.sizeDelta.y : 0f;
+            // The open paths list takes the legend's place (the portrait wheel keeps clear of either).
+            float legendH = l.Hud.LegendVisible ? l.Hud.LegendRect.sizeDelta.y
+                : l.Paths != null && l.Paths.ListVisible && l.Paths.ListRect != null ? l.Paths.ListRect.sizeDelta.y : 0f;
+            float infoH = l.Hud.EdgeCardVisible ? l.Hud.InfoRect.sizeDelta.y : 0f;
             LayoutFrame frame = Compute(w, h, melody, photo, narrated, legendH, infoH,
                 captured ? baseTour : DefaultTourView, captured ? baseMashup : DefaultMashupView);
             Frame = frame;
@@ -305,6 +369,16 @@ namespace MusicHistory.Viewer
                 l.Hud.LegendRect.anchoredPosition = new Vector2(Margin, -top);
                 l.Hud.InfoRect.anchoredPosition = new Vector2(-Margin, -top);
             }
+            // The chord wheel and the path's name (the wheel follows the legend in portrait).
+            RectTransform wheel = l.Hud.WheelRect;
+            if (wheel.anchorMin != Vector2.zero || wheel.pivot != Vector2.zero)
+            {
+                wheel.anchorMin = wheel.anchorMax = Vector2.zero;
+                wheel.pivot = Vector2.zero;
+            }
+            if (wheel.anchoredPosition != frame.Wheel.position) wheel.anchoredPosition = frame.Wheel.position;
+            l.Hud.PlacePathTitle(frame.PathTitle, frame.Canvas.y, frame.PathTitleFont, PathTitleMin);
+
             // The melody graph's place (it is rebuilt with each mashup catalog: set it every frame it differs).
             if (l.MelodyGraph != null && l.MelodyGraph.PanelRect is RectTransform melodyRect)
             {

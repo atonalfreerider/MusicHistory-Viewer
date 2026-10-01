@@ -525,8 +525,9 @@ namespace MusicHistory.Walkthrough
         {
             Camera? cam = Loader.ViewCamera;
             if (cam == null) return;
-            List<(Vector3, float)> items = new() { (child.transform.position, child.Radius * 1.4f) };
-            if (partner != null) items.Add((partner.transform.position, partner.Radius * 1.4f));
+            // The size the songs are growing to (a highlighted bubble is three times larger).
+            List<(Vector3, float)> items = new() { (child.transform.position, child.TargetRadius * 1.4f) };
+            if (partner != null) items.Add((partner.transform.position, partner.TargetRadius * 1.4f));
             (flyToPosition, flyToRotation) = CameraFraming.Frame(cam, items, Loader.Frame.ViewForward, FramingMargin, MinFramingDistance, FramingViewport);
             flyFromPosition = cam.transform.position;
             flyFromRotation = cam.transform.rotation;

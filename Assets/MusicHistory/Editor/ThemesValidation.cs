@@ -145,7 +145,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             WriteJson(report, Path.Combine(outDir, "themes_validation.json"));
             Debug.Log($"[themes-validation] {report.Checks.Count - report.Failures}/{report.Checks.Count} checks passed; report in {outDir}");

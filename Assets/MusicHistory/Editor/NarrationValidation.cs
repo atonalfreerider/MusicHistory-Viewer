@@ -69,7 +69,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             string summary = $"{report.Checks.Count - report.Failures}/{report.Checks.Count} narration checks passed";
             try
@@ -135,6 +135,24 @@ namespace MusicHistory.EditorTools
                 p.CueAt(29.99) == null && p.CueAt(30) == p.Cues[2] && p.CueAt(60) == null && p.IndexAt(25) == 1 && p.NextAfter(25) == p.Cues[2]);
             r.Check("catalog: the caption holds after the line, never into the next cue",
                 p.CaptionAt(5.3, .6) == p.Cues[0] && p.CaptionAt(5.7, .6) == null && p.CaptionAt(18.5, .6) == s1 && p.CaptionAt(11.99, 20) == p.Cues[0]);
+            // A captions-only cue (no voice: file, duck_db, inflection all null; seconds = reading time) is valid.
+            NarrationCatalog cc = NarrationCatalog.Parse(NarrationFixture(@",
+    {""id"": ""captions-path"", ""cues"": [
+      {""id"": ""read"", ""at"": 2.0, ""seconds"": 3.5, ""file"": null, ""text"": ""These two songs share a bass line."",
+       ""duck_db"": null, ""image"": ""artist-a"", ""sources"": [], ""inflection"": null},
+      {""id"": ""half"", ""at"": 9.0, ""seconds"": 2.0, ""file"": null, ""text"": ""Only the file is missing here."",
+       ""duck_db"": -12, ""image"": null, ""sources"": [], ""inflection"": null}
+    ]}"), Path.Combine(Path.GetTempPath(), "narration-fixture"), "fixture");
+            NarrationPath? cp = cc.For("captions-path");
+            NarrationCue? read = cp?.Cues.FirstOrDefault(q => q.Id == "read");
+            NarrationCue? half = cp?.Cues.FirstOrDefault(q => q.Id == "half");
+            r.Check("catalog: a captions-only cue (file, duck_db and inflection null) is valid: no problem, no WAV expected, no duck, its caption and photo kept",
+                read != null && read.CaptionsOnly && read.File.Length == 0 && read.AbsoluteFile.Length == 0 && !read.FileExists && read.DuckDb == 0 && read.Seconds == 3.5 &&
+                read.HasImage && read.Text.StartsWith("These two") && !cc.Problems.Any(x => x.Contains("'read'")) &&
+                cp!.CaptionAt(4.0, .6) == read && cp.ReadingCaptionAt(4.0, 15, 1.5, .6) == read,
+                string.Join(" | ", cc.Problems));
+            r.Check("catalog: a cue with only some of file / duck_db / inflection null is still reported (not captions-only)",
+                half != null && !half.CaptionsOnly && cc.Problems.Any(x => x.Contains("'half'") && x.Contains("no file")), string.Join(" | ", cc.Problems));
             r.Check("catalog: For() finds the path by id; unknown ids and empty ids give null",
                 c.For("nope") == null && c.For("") == null && c.For(null) == null);
 
@@ -426,10 +444,12 @@ namespace MusicHistory.EditorTools
             r.Check("layout: vertical text is readable at 1080x1920 (caption ≥ 30 px, photo subject ≥ 20 px, credit ≥ 13 px on screen)",
                 v.CaptionFont * vs >= 30f && v.SubjectFont * vs >= 20f && v.CreditFont * vs >= 13f && v.CaptionMinFont * vs >= 22f,
                 $"scale {vs:0.000}: caption {v.CaptionFont * vs:0.#} px, subject {v.SubjectFont * vs:0.#} px, credit {v.CreditFont * vs:0.#} px");
-            // The portrait melody graph is three times larger (DESIGN.md §16), so the 3D view above it
-            // gets less of the frame than before (it was at least a third).
-            r.Check("layout: the vertical graph view is at least a quarter of the screen, above the 3x melody graph",
-                v.MashupView.height >= .25f && Mathf.Approximately(v.Melody.height, MelodyGraphPanel.PortraitPanelHeight),
+            // The portrait melody graph is three times larger (DESIGN.md §16) and the chord wheel
+            // (2.5x, top centre) sits above the 3D view, so the view gets less of the frame than
+            // before (it was at least a third, then a quarter).
+            r.Check("layout: the vertical graph view is at least a fifth of the screen, between the 3x melody graph and the chord wheel",
+                v.MashupView.height >= .2f && Mathf.Approximately(v.Melody.height, MelodyGraphPanel.PortraitPanelHeight) &&
+                v.MashupView.yMax * v.Canvas.y <= v.Wheel.yMin + .5f && v.Wheel.width >= 2.5f * 188f - .5f,
                 $"{v.MashupView.height:0.000}; melody graph {v.Melody.height:0} px tall");
             LayoutFrame duet = ViewerLayout.Compute(1080, 1920, true, false, false, NominalLegend, NominalInfo, ViewerLayout.DefaultTourView, ViewerLayout.DefaultMashupView);
             r.Check("layout: vertical without narration (a duet loop): the melody graph sits right above the strip, the view gets the band's room",
@@ -445,7 +465,7 @@ namespace MusicHistory.EditorTools
                         // The biggest caption and card the overlay can place.
                         Rect caption = f.PlaceCaption(new Vector2(f.CaptionSlot.width, f.CaptionSlot.height));
                         Rect card = f.PlaceCard(f.CardSlot.height);
-                        List<(string, Rect)> fixedRects = new() { ("strip", f.Strip), ("button", f.Button), ("legend", f.Legend), ("info", f.Info) };
+                        List<(string, Rect)> fixedRects = new() { ("strip", f.Strip), ("button", f.Button), ("legend", f.Legend), ("info", f.Info), ("wheel", f.Wheel), ("path name", f.PathTitle) };
                         if (melody) fixedRects.Add(("melody graph", f.Melody));
                         List<string> overlaps = new();
                         foreach ((string name, Rect rect) in fixedRects)
@@ -455,8 +475,13 @@ namespace MusicHistory.EditorTools
                         }
                         if (photo && caption.Overlaps(card)) overlaps.Add("caption×card");
                         if (f.Strip.Overlaps(f.Melody)) overlaps.Add("strip×melody");
+                        if (f.Wheel.Overlaps(f.Button)) overlaps.Add("wheel×button");
+                        if (f.PathTitle.Overlaps(f.Button)) overlaps.Add("path name×button");
+                        if (f.PathTitle.Overlaps(f.Wheel)) overlaps.Add("path name×wheel");
+                        if (melody && f.Melody.Overlaps(f.Wheel)) overlaps.Add("melody×wheel");
                         Rect screen = new(0, 0, f.Canvas.x, f.Canvas.y);
-                        bool inside = Inside(screen, caption) && Inside(screen, f.Strip) && Inside(screen, f.Melody) && (!photo || Inside(screen, card));
+                        bool inside = Inside(screen, caption) && Inside(screen, f.Strip) && Inside(screen, f.Melody) && (!photo || Inside(screen, card)) &&
+                                      Inside(screen, f.Wheel) && Inside(screen, f.PathTitle);
                         bool cardRoom = !photo || card.width >= 200f && card.height >= 280f;
                         r.Check($"layout {label}{(melody ? "" : ", melody hidden")}{(photo ? ", photo" : "")}: no overlaps, all on screen",
                             overlaps.Count == 0 && inside && cardRoom,
@@ -488,9 +513,14 @@ namespace MusicHistory.EditorTools
             r.Check("real: narration.json is contract version 1 with no problems", n.Version == NarrationCatalog.ContractVersion && n.Problems.Count == 0,
                 n.Problems.Count > 0 ? $"{n.Problems.Count} problems, first: {string.Join(" | ", n.Problems.Take(5))}" : n.Status);
             List<NarrationCue> cues = n.Paths.SelectMany(p => p.Cues).ToList();
-            List<NarrationCue> noFile = cues.Where(c => !c.FileExists).ToList();
-            // The WAVs are kept for future reference (never played): they should still be there.
-            r.Check("real: every cue's WAV exists (kept on disk, never played)", noFile.Count == 0, noFile.Count > 0 ? $"{noFile.Count} missing, first {noFile[0].AbsoluteFile}" : $"{cues.Count} cues");
+            List<NarrationCue> voiced = cues.Where(c => !c.CaptionsOnly).ToList(), captionsOnly = cues.Where(c => c.CaptionsOnly).ToList();
+            List<NarrationCue> noFile = voiced.Where(c => !c.FileExists).ToList();
+            // The WAVs are kept for future reference (never played): they should still be there. Captions-only cues have none.
+            r.Check("real: every voiced cue's WAV exists (kept on disk, never played); captions-only cues expect none",
+                noFile.Count == 0 && captionsOnly.All(c => c.File.Length == 0 && c.DuckDb == 0 && c.Seconds > 0 && c.Text.Length > 0),
+                noFile.Count > 0 ? $"{noFile.Count} missing, first {noFile[0].AbsoluteFile}" : $"{voiced.Count} voiced cues, {captionsOnly.Count} captions-only");
+            List<string> captionPaths = n.Paths.Where(p => p.Cues.Count > 0 && p.Cues.All(c => c.CaptionsOnly)).Select(p => p.Id).ToList();
+            r.Note($"real: captions-only paths: {captionPaths.Count} ({string.Join(", ", captionPaths)})");
             List<NarrationCue> withImage = cues.Where(c => c.HasImage).ToList();
             List<string> badImages = withImage.Where(c => images.Find(c.Image) is not ArtistImage a || !a.Showable || a.Author.Length == 0)
                 .Select(c => c.Image).Distinct().ToList();
@@ -516,7 +546,7 @@ namespace MusicHistory.EditorTools
             }
             List<NarrationCue> empty = cues.Where(c => c.FileExists && new FileInfo(c.AbsoluteFile).Length <= 44).ToList();
             r.Check("real: no cue WAV is empty", empty.Count == 0, empty.Count > 0 ? $"first {empty[0].AbsoluteFile}" : "");
-            r.Note($"real: {n.Paths.Count} narrated paths, {cues.Count} cues, {cues.Sum(c => c.Seconds):0} s spoken");
+            r.Note($"real: {n.Paths.Count} narrated paths, {cues.Count} cues ({captionsOnly.Count} captions-only), {cues.Sum(c => c.Seconds):0} s");
         }
 
         // ------------------------------------------------------------------ helpers

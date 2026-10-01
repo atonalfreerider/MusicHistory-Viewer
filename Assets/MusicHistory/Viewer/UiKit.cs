@@ -170,6 +170,8 @@ namespace MusicHistory.Viewer
             RectTransform r = Rect(name, parent);
             r.gameObject.AddComponent<CanvasRenderer>();
             TextMeshProUGUI t = r.gameObject.AddComponent<TextMeshProUGUI>();
+            // Under an inactive parent TMP never loads its default font, and measuring would fail.
+            if (t.font == null) t.font = TMP_Settings.defaultFontAsset;
             t.fontSize = size;
             t.color = color;
             t.alignment = alignment;
@@ -196,6 +198,38 @@ namespace MusicHistory.Viewer
                 t.fontSize = Mathf.Max(minSize, Mathf.Floor(maxSize * width / preferred * 4f) / 4f);
             return t.fontSize;
         }
+
+        static Material? outlined;
+
+        /// <summary>
+        /// Text that floats over the 3D view without a panel: one shared font material with a dark
+        /// outline and a soft dark underlay (shadow), so it reads over bright and busy backgrounds.
+        /// </summary>
+        public static void Outline(TMP_Text t)
+        {
+            if (t.font == null) t.font = TMP_Settings.defaultFontAsset;
+            if (outlined == null)
+            {
+                outlined = new Material(t.fontSharedMaterial)
+                {
+                    name = "MusicHistory HUD Text (outlined, shadowed)",
+                    hideFlags = HideFlags.DontSave
+                };
+                outlined.SetFloat("_OutlineWidth", .2f);
+                outlined.SetColor("_OutlineColor", new Color(.02f, .025f, .03f, 1f));
+                outlined.SetFloat("_FaceDilate", .1f);
+                outlined.EnableKeyword("UNDERLAY_ON");
+                outlined.SetColor("_UnderlayColor", new Color(0f, 0f, 0f, .7f));
+                outlined.SetFloat("_UnderlaySoftness", .55f);
+                outlined.SetFloat("_UnderlayDilate", .35f);
+                outlined.SetFloat("_UnderlayOffsetX", .35f);
+                outlined.SetFloat("_UnderlayOffsetY", -.35f);
+            }
+            t.fontSharedMaterial = outlined;
+        }
+
+        /// <summary>The shared outlined material (null until a text used it).</summary>
+        public static Material? OutlinedMaterial => outlined;
 
         public static void SetText(TMP_Text t, string value)
         {

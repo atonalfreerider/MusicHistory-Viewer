@@ -11,10 +11,22 @@ namespace MusicHistory.Viewer
     /// camera-facing SongBubble shader with a shared material (fill = key, ring = decade). Bubble
     /// area is proportional to descendants + 1. The label is a separate world label, so its size
     /// never depends on the bubble's size.
+    /// While a tour highlights the song (the playing song, both singers of a duet, the vocal and the
+    /// instrumental of a changeover: <see cref="SetHighlighted"/>) the whole node grows to
+    /// <see cref="HighlightScale"/> times its size, easing over <see cref="ScaleSeconds"/>: the
+    /// bubble, its photo and glow (children), its picking collider (on the root), its label's anchor
+    /// radius and the edges' insets follow (<see cref="DisplayRadius"/>), and the camera frames the
+    /// size it is heading to (<see cref="TargetRadius"/>).
     /// </summary>
     public sealed class SongNode : MonoBehaviour
     {
         static Mesh? quadMesh;
+        /// <summary>Size of a highlighted bubble (times its own).</summary>
+        public const float HighlightScale = 3f;
+        /// <summary>How long a bubble takes to grow or shrink back (smooth in and out).</summary>
+        public const float ScaleSeconds = .4f;
+        static readonly HashSet<SongNode> scaling = new();
+        float scale = 1f, scaleFrom = 1f, scaleTo = 1f, scaleT = 1f;
 
         [NonSerialized] public SongRecord Song = null!;
         public float Radius;
@@ -36,6 +48,14 @@ namespace MusicHistory.Viewer
         bool labelRequested;
 
         public BubbleState State => state;
+        /// <summary>The node's current size factor (1, easing to <see cref="HighlightScale"/> while highlighted).</summary>
+        public float Scale => scale;
+        /// <summary>A tour highlights this song: it grows (or has grown) to <see cref="HighlightScale"/>.</summary>
+        public bool Highlighted => scaleTo > 1f;
+        /// <summary>The radius drawn now (world units).</summary>
+        public float DisplayRadius => Radius * scale;
+        /// <summary>The radius it is heading to (what the camera frames).</summary>
+        public float TargetRadius => Radius * scaleTo;
         public MeshRenderer BubbleRenderer => bubbleRenderer;
         /// <summary>The artist photo on the bubble (<see cref="BubblePhotos"/>; null when the song has none).</summary>
         public MeshRenderer? PhotoRenderer => photoRenderer;
@@ -101,6 +121,63 @@ namespace MusicHistory.Viewer
             if (photoRenderer != null) photoRenderer.sharedMaterial = BubblePhotos.MaterialFor(photoId, newState);
         }
 
+        /// <summary>
+        /// Grows the node to <see cref="HighlightScale"/> (true) or back to its own size (false),
+        /// easing over <see cref="ScaleSeconds"/> from wherever it is (<see cref="TickScales"/> runs it);
+        /// <paramref name="immediate"/> jumps there.
+        /// </summary>
+        public void SetHighlighted(bool on, bool immediate = false)
+        {
+            float target = on ? HighlightScale : 1f;
+            if (Mathf.Approximately(target, scaleTo) && !immediate) return;
+            scaleFrom = scale;
+            scaleTo = target;
+            scaleT = 0f;
+            if (immediate || ScaleSeconds <= 0f)
+            {
+                scaleT = 1f;
+                ApplyScale(target);
+                scaling.Remove(this);
+                return;
+            }
+            scaling.Add(this);
+        }
+
+        /// <summary>Advances every growing or shrinking node by <paramref name="dt"/> seconds.</summary>
+        public static void TickScales(float dt)
+        {
+            if (scaling.Count == 0) return;
+            List<SongNode>? done = null;
+            foreach (SongNode n in scaling)
+            {
+                if (n == null)
+                {
+                    (done ??= new List<SongNode>()).Add(n!);
+                    continue;
+                }
+                n.scaleT = Mathf.Min(1f, n.scaleT + Mathf.Max(0f, dt) / ScaleSeconds);
+                float u = n.scaleT * n.scaleT * (3f - 2f * n.scaleT);
+                n.ApplyScale(Mathf.Lerp(n.scaleFrom, n.scaleTo, u));
+                if (n.scaleT >= 1f) (done ??= new List<SongNode>()).Add(n);
+            }
+            if (done != null) foreach (SongNode n in done) scaling.Remove(n);
+        }
+
+        /// <summary>Every growing or shrinking node jumps to its end size (edit-mode captures).</summary>
+        public static void SettleScales() => TickScales(ScaleSeconds * 2f);
+
+        /// <summary>Nodes still easing.</summary>
+        public static int ScalingCount => scaling.Count;
+
+        void ApplyScale(float s)
+        {
+            scale = s;
+            if (this == null) return;
+            transform.localScale = Vector3.one * s;
+            if (Label != null && LabelLayer.IsAlive(Label)) Label.AnchorRadius = Radius * s;
+            OnMoved();
+        }
+
         /// <summary>Puts photo <paramref name="id"/>'s renderer on this bubble (its material follows the bubble's state).</summary>
         public void AttachPhoto(MeshRenderer renderer, string id)
         {
@@ -138,7 +215,7 @@ namespace MusicHistory.Viewer
             if (Label != null && !LabelLayer.IsAlive(Label)) return;
             bool want = LabelPinned || labelRequested;
             if (want && Label == null)
-                Label = layer.Create(LabelText, transform, transform.position, Radius, LabelPlacement.Right);
+                Label = layer.Create(LabelText, transform, transform.position, DisplayRadius, LabelPlacement.Right);
             if (Label != null)
             {
                 layer.SetVisible(Label, want);

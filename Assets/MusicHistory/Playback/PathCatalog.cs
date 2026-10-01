@@ -98,6 +98,8 @@ namespace MusicHistory.Playback
         public int Index;
         public string Id = "";
         public string Title = "";
+        /// <summary>The path's short name ("Aeolian Rock"; paths.json "name", optional).</summary>
+        public string Name = "";
         public string Subtitle = "";
         /// <summary>What connects the songs (musical identity only).</summary>
         public string Description = "";
@@ -105,6 +107,9 @@ namespace MusicHistory.Playback
         public string Identity = "";
         public double Seconds;
         public readonly List<PathStep> Steps = new();
+
+        /// <summary>The name shown while the path plays: <see cref="Name"/>, else the id in title case ("Rock and Roll Twelve Bars").</summary>
+        public string DisplayName => Name.Length > 0 ? Name : PathCatalog.TitleCase(Id);
 
         public int FirstYear
         {
@@ -170,6 +175,30 @@ namespace MusicHistory.Playback
     /// </summary>
     public sealed class PathCatalog
     {
+        static readonly HashSet<string> SmallWords = new(StringComparer.Ordinal)
+        {
+            "a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "n", "nor", "of", "on", "or", "the", "to", "via", "vs", "with"
+        };
+
+        /// <summary>
+        /// A path id as a title: words split on '-' / '_' / spaces, each capitalised except small
+        /// words inside the name ("summer-place-to-barbie-girl" → "Summer Place to Barbie Girl").
+        /// </summary>
+        public static string TitleCase(string? id)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return "";
+            string[] words = id!.Split(new[] { '-', '_', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            StringBuilder b = new();
+            for (int i = 0; i < words.Length; i++)
+            {
+                string w = words[i].ToLowerInvariant();
+                if (i > 0) b.Append(' ');
+                if (i > 0 && i < words.Length - 1 && SmallWords.Contains(w)) b.Append(w);
+                else b.Append(char.ToUpperInvariant(w[0])).Append(w, 1, w.Length - 1);
+            }
+            return b.ToString();
+        }
+
         public const string FileName = "paths.json";
         public const string CommandLineFlag = "-musicHistoryPaths";
         public const int ContractVersion = 2;
@@ -264,6 +293,7 @@ namespace MusicHistory.Playback
                     Index = c.Paths.Count,
                     Id = MiniJson.Str(p, "id"),
                     Title = MiniJson.Str(p, "title"),
+                    Name = MiniJson.Str(p, "name").Trim(),
                     Subtitle = MiniJson.Str(p, "subtitle"),
                     Description = MiniJson.Str(p, "description"),
                     Identity = MiniJson.Str(p, "identity"),

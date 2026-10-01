@@ -10,10 +10,12 @@ using UnityEngine.UI;
 namespace MusicHistory.Viewer
 {
     /// <summary>
-    /// Screen overlay: legend + controls (top left), the focused song's card (top right: title,
-    /// artist · year, key · BPM and its chord progression as a ring, <see cref="ChordRingView"/> —
-    /// the song's main loop, or while a mix or a duet loop plays the progression heard, with a hand
-    /// at the music's place) or a clicked edge's card, and the walkthrough panel (bottom). For
+    /// Screen overlay: legend + controls (top left; hidden while a featured path plays, when the
+    /// path's name takes its place in large outlined type), the focused song's chord wheel (no panel,
+    /// no text but the chord names: <see cref="ChordRingView"/> — the song's main loop, or while a mix
+    /// or a duet loop plays the progression heard, with a hand at the music's place and the chord
+    /// sounding lit; <see cref="ViewerLayout"/> puts it top right in landscape, top centre in
+    /// portrait) or a clicked edge's card (top right), and the walkthrough panel (bottom). For
     /// identity lineages (DESIGN.md §8b) edges read "Shares: &lt;identity&gt; · family of N songs"
     /// (plus "strong match (z …)"), never bits; the lineage and the shared identities are on the
     /// edge card (click an edge), not on the song card.
@@ -38,16 +40,22 @@ namespace MusicHistory.Viewer
 
         Canvas canvas = null!;
         Panel legend = null!, info = null!, tour = null!;
-        // The song card inside the info panel: title, artist · year, key · BPM, the chord ring.
-        RectTransform card = null!;
-        TextMeshProUGUI cardTitle = null!, cardArtist = null!, cardKey = null!;
+        // The song card is the chord wheel alone, floating over the graph (no backdrop, no text).
         ChordRingView ring = null!;
+        bool wheelShown;
         SongNode? cardSong;
         string cardSummary = "";
         object? ringSource;
-        int ringPhrase = -1, ringCurrent = -2;
-        /// <summary>Side of the chord ring on the song card (reference px).</summary>
-        public const float RingSize = 188f;
+        int ringPhrase = -1;
+        // The featured path's name, top left while it plays.
+        TextMeshProUGUI pathTitle = null!;
+        string pathTitleText = "";
+        // Left, distance from the top, width, height (reference px); landscape until the layout says otherwise.
+        Rect pathTitleSlot = new(20f, ViewerLayout.PathTitleTop, 790f, ViewerLayout.PathTitleHeight);
+        float pathTitleMax = 44f, pathTitleMin = 26f;
+        bool pathPlaying;
+        /// <summary>Side of the chord wheel's square (reference px): 2.5 times the old song card's ring (188 px).</summary>
+        public const float WheelSize = 470f;
         const char Newline = '\n';
         RectTransform progressFill = null!;
         Image progressFillImage = null!;
@@ -56,18 +64,29 @@ namespace MusicHistory.Viewer
 
         public bool HelpVisible { get; private set; }
         /// <summary>
-        /// What the info panel says: the song card as plain text ("title", "artist · year",
-        /// "key · BPM BPM", "loop: I V vi IV") or the edge card's text.
+        /// The focused song as plain text ("title", "artist · year", "key · BPM BPM", "loop: I V vi IV";
+        /// not drawn: the wheel shows no text but its chord names) or the edge card's text.
         /// </summary>
         public string InfoText => SongCardVisible ? cardSummary : info.Text.text;
-        /// <summary>The song card (title, artist, key · BPM, chord ring) is showing.</summary>
-        public bool SongCardVisible => card != null && card.gameObject.activeSelf && info.Root.activeSelf;
-        /// <summary>The song the card shows (null: none, or the edge card shows).</summary>
+        /// <summary>A song is focused and its chord wheel's place is taken (the wheel shows when it has chords).</summary>
+        public bool SongCardVisible => wheelShown && cardSong != null;
+        /// <summary>The song the wheel shows (null: none, or the edge card shows).</summary>
         public SongNode? CardSong => SongCardVisible ? cardSong : null;
-        /// <summary>The song card's chord ring.</summary>
+        /// <summary>The chord wheel.</summary>
         public ChordRingView Ring => ring;
-        /// <summary>The song / edge card is showing (InfoText keeps the last text while hidden).</summary>
-        public bool InfoVisible => info.Root.activeSelf;
+        /// <summary>The chord wheel is drawn (a focused song with chords, or a mix / duet loop playing).</summary>
+        public bool WheelVisible => ring != null && ring.Visible;
+        /// <summary>The chord wheel's square (placed by <see cref="ViewerLayout"/>).</summary>
+        public RectTransform WheelRect => ring.Root;
+        /// <summary>The song wheel or the edge card is showing (InfoText keeps the last text while hidden).</summary>
+        public bool InfoVisible => info.Root.activeSelf || SongCardVisible;
+        /// <summary>The edge card (top right) is showing.</summary>
+        public bool EdgeCardVisible => info.Root.activeSelf;
+        /// <summary>The featured path's name shown top left ("" when none).</summary>
+        public string PathTitleText => PathTitleVisible ? pathTitleText : "";
+        public bool PathTitleVisible => pathTitle != null && pathTitle.gameObject.activeSelf;
+        public RectTransform PathTitleRect => pathTitle.rectTransform;
+        public TextMeshProUGUI PathTitleLabel => pathTitle;
         public string TourText => tour.Text.text;
         public string LegendText => legend.Text.text;
         /// <summary>The legend panel is showing (the featured-paths list replaces it while open).</summary>
@@ -77,7 +96,7 @@ namespace MusicHistory.Viewer
         public Canvas Canvas => canvas;
         /// <summary>The legend panel (top left; <see cref="ViewerLayout"/> moves it in the vertical layout).</summary>
         public RectTransform LegendRect => legend.Rect;
-        /// <summary>The song info / edge card panel (top right).</summary>
+        /// <summary>The edge card panel (top right).</summary>
         public RectTransform InfoRect => info.Rect;
         /// <summary>More panels on this canvas that world labels keep clear of (point-anchored, active ones count).</summary>
         [NonSerialized] public Func<IReadOnlyList<RectTransform>>? ExtraPanels;
@@ -86,6 +105,7 @@ namespace MusicHistory.Viewer
         public void Build(SongGraphLoader owner)
         {
             loader = owner;
+            ring?.Dispose();
             GameObject canvasObject = new("MusicHistory HUD", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             canvasObject.transform.SetParent(transform, false);
             canvas = canvasObject.GetComponent<Canvas>();
@@ -98,8 +118,9 @@ namespace MusicHistory.Viewer
             canvasScaler = scaler;
 
             legend = CreatePanel("Legend", new Vector2(0, 1), new Vector2(0, 1), new Vector2(20, -20), 660, TextAlignmentOptions.TopLeft, 17);
-            info = CreatePanel("Song Info", new Vector2(1, 1), new Vector2(1, 1), new Vector2(-20, -20), 540, TextAlignmentOptions.TopLeft, 19);
-            BuildCard();
+            info = CreatePanel("Edge Card", new Vector2(1, 1), new Vector2(1, 1), new Vector2(-20, -20), 540, TextAlignmentOptions.TopLeft, 19);
+            BuildWheel();
+            BuildPathTitle();
             tour = CreatePanel("Walkthrough", new Vector2(.5f, 0), new Vector2(.5f, 0), new Vector2(0, 16), 1240, TextAlignmentOptions.TopLeft, 19);
 
             GameObject back = new("Progress", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
@@ -197,6 +218,7 @@ namespace MusicHistory.Viewer
 
         void RefreshLegend()
         {
+            pathPlaying = PlayingPath() != null;
             bool lineage = loader != null && loader.Data != null && loader.Data.IsIdentityLineage;
             string help = HelpVisible
                 ? (lineage
@@ -207,22 +229,22 @@ namespace MusicHistory.Viewer
                   $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back · M melody graph (mashup mixes) · N captions on/off (narrated paths: on-screen text, no voiceover)" +
                   $"\n<color={Muted}>Duet loops</color>  K plays the selected path's duet loop (two voices at all times, no narration) · while a path plays, K switches between its duet loop and its narrated mix · ←/→ previous / next pair"
                 : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths";
-            SetText(legend, legendHidden ? "" : legendBody + help);
+            // A playing featured path's name takes the legend's place.
+            SetText(legend, legendHidden || pathPlaying ? "" : legendBody + help);
         }
 
-        /// <summary>The song card for <paramref name="node"/> (null hides the panel).</summary>
+        /// <summary>The chord wheel for <paramref name="node"/> (null hides it).</summary>
         public void ShowSong(SongNode? node)
         {
+            SetText(info, "");
             if (node == null)
             {
                 cardSong = null;
-                UiKit.Show(card, false);
-                SetText(info, "");
+                wheelShown = false;
+                UiKit.Show(ring.Root, false);
                 return;
             }
-            info.Text.text = "";
-            if (!info.Root.activeSelf) info.Root.SetActive(true);
-            UiKit.Show(card, true);
+            wheelShown = true;
             if (!ReferenceEquals(cardSong, node)) FillCard(node);
             RefreshRing();
         }
@@ -231,22 +253,30 @@ namespace MusicHistory.Viewer
         public void ShowEdge(InfluenceEdge edge)
         {
             cardSong = null;
-            UiKit.Show(card, false);
+            wheelShown = false;
+            UiKit.Show(ring.Root, false);
             SetText(info, EdgeInfo(edge));
         }
 
-        // ------------------------------------------------------------------ the song card
+        // ------------------------------------------------------------------ the chord wheel
 
-        void BuildCard()
+        void BuildWheel()
         {
-            card = UiKit.Rect("Song Card", info.Rect);
-            UiKit.Place(card, 0, 0, info.Width, RingSize + 2 * Padding);
-            cardTitle = UiKit.Text("Title", card, 24, new Color(.96f, .97f, .98f, 1f), TextAlignmentOptions.TopLeft, bold: true, wrap: true);
-            cardArtist = UiKit.Text("Artist", card, 17, new Color(.70f, .73f, .77f, 1f), TextAlignmentOptions.TopLeft);
-            cardKey = UiKit.Text("Key", card, 17, new Color(.93f, .94f, .96f, 1f), TextAlignmentOptions.TopLeft);
-            ring = new ChordRingView(card, RingSize);
-            UiKit.Place(ring.Root, info.Width - Padding - RingSize + 6f, Padding - 6f, RingSize, RingSize);
-            UiKit.Show(card, false);
+            // Its bloom rig lives under this component (far from the scene, on its own layer).
+            ring = new ChordRingView(canvas.transform, WheelSize, transform);
+            ring.Root.anchorMin = ring.Root.anchorMax = new Vector2(1f, 1f);
+            ring.Root.pivot = new Vector2(1f, 1f);
+            ring.Root.anchoredPosition = new Vector2(-20f, -20f);
+            UiKit.Show(ring.Root, false);
+            HideWheelLayer();
+        }
+
+        /// <summary>The view camera never draws the wheel's light layer (its own camera does).</summary>
+        void HideWheelLayer()
+        {
+            Camera? cam = loader != null ? loader.ViewCamera : null;
+            int bit = 1 << MelodyLightRig.WheelLayer;
+            if (cam != null && (cam.cullingMask & bit) != 0) cam.cullingMask &= ~bit;
         }
 
         void FillCard(SongNode node)
@@ -254,31 +284,13 @@ namespace MusicHistory.Viewer
             cardSong = node;
             SongRecord s = node.Song;
             List<RingChord> loop = MainLoop.Parse(s.MainLoop);
-            bool hasRing = loop.Count > 0;
-            // The ring's column is always kept: a song without a stored loop still shows the progression heard while it plays.
-            float textWidth = info.Width - 2 * Padding - RingSize - 4f;
-            cardTitle.text = Esc(s.Title);
-            float titleH = Mathf.Ceil(Mathf.Min(cardTitle.GetPreferredValues(cardTitle.text, textWidth, 0).y, 3 * 24 * 1.25f));
             string bpm = SongPalette.Invariant(s.NativeBpm, "0.#");
-            cardArtist.text = $"{Esc(s.Artist)} · {s.Year}";
-            cardKey.text = $"{Esc(s.KeyName)} · {bpm} BPM";
-            float y = Padding + 2f;
-            UiKit.Place(cardTitle.rectTransform, Padding + 2f, y, textWidth, titleH);
-            y += titleH + 6f;
-            UiKit.Place(cardArtist.rectTransform, Padding + 2f, y, textWidth, 22f);
-            y += 26f;
-            UiKit.Place(cardKey.rectTransform, Padding + 2f, y, textWidth, 22f);
-            y += 22f + Padding;
-            float height = Mathf.Max(y, RingSize + 2 * Padding - 12f);
-            card.sizeDelta = new Vector2(info.Width, height);
-            info.Rect.sizeDelta = new Vector2(info.Width, height);
-            UiKit.Show(ring.Root, hasRing);
             ringSource = null;
             ringPhrase = -1;
             StringBuilder b = new();
             b.Append(s.Title).Append(Newline).Append(s.Artist).Append(" · ").Append(s.Year).Append(Newline)
                 .Append(s.KeyName).Append(" · ").Append(bpm).Append(" BPM");
-            if (hasRing)
+            if (loop.Count > 0)
             {
                 b.Append(Newline).Append("loop:");
                 foreach (RingChord c in loop) b.Append(' ').Append(c.Roman);
@@ -288,13 +300,20 @@ namespace MusicHistory.Viewer
 
         void LateUpdate()
         {
+            if (canvas == null || ring == null) return;
             if (SongCardVisible) RefreshRing();
+            RefreshPathTitle();
+            HideWheelLayer();
+            Vector2Int screen = ViewerLayout.CurrentScreen();
+            ring.SyncBloom(ScaleFor(screen.x, screen.y), false);
         }
 
         /// <summary>
-        /// The ring shows the progression heard while a mix or a duet loop plays (the instrumental's
+        /// The wheel shows the progression heard while a mix or a duet loop plays (the instrumental's
         /// phrase; a duet's bed over its current phrase) with the hand at the music's place, else the
-        /// card song's main loop. Refilled only when its source changes; the hand moves every frame.
+        /// focused song's main loop. Chords are coloured and named against the tonic their roman
+        /// numerals imply (<see cref="ChordKey"/>), a song's main loop against its mode's tonic.
+        /// Refilled only when its source changes; the hand moves every frame.
         /// </summary>
         public void RefreshRing()
         {
@@ -309,10 +328,9 @@ namespace MusicHistory.Viewer
                 {
                     ringSource = l;
                     ringPhrase = k;
-                    ring.Set(ChordRingView.Window(l.Chords, k * phrase, phrase), phrase, "", "BED", l);
-                    ringCurrent = -2;
+                    ring.Set(ChordRingView.Window(l.Chords, k * phrase, phrase), phrase, ChordKey.TonicOf(l.Chords, l.Key), l);
                 }
-                Point(beat - k * phrase, "BED");
+                Point(beat - k * phrase);
                 return;
             }
             if (d != null && d.CurrentMashup is Playback.Mashup m && d.CurrentSegment is Playback.MashupSegment g && g.InstrumentalSong >= 0)
@@ -322,10 +340,9 @@ namespace MusicHistory.Viewer
                 {
                     ringSource = chords;
                     ringPhrase = -1;
-                    ring.Set(ChordRingView.Window(chords, 0, m.PhraseBeats), m.PhraseBeats, "", "HEARD", chords);
-                    ringCurrent = -2;
+                    ring.Set(ChordRingView.Window(chords, 0, m.PhraseBeats), m.PhraseBeats, ChordKey.TonicOf(chords, g.Key), chords);
                 }
-                Point(m.PhraseBeatAt(d.MixSeconds), "HEARD");
+                Point(m.PhraseBeatAt(d.MixSeconds));
                 return;
             }
             if (!ReferenceEquals(ringSource, cardSong))
@@ -333,22 +350,88 @@ namespace MusicHistory.Viewer
                 ringSource = cardSong;
                 ringPhrase = -1;
                 List<RingChord> loop = MainLoop.Parse(cardSong.Song.MainLoop);
-                ring.Set(loop, 0, loop.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), "CHORDS", cardSong);
+                ring.Set(loop, 0, ChordKey.ForMode(cardSong.Song.Minor), cardSong);
                 UiKit.Show(ring.Root, loop.Count > 0);
                 ring.SetPointer(null);
-                ringCurrent = -2;
             }
         }
 
-        /// <summary>The hand at <paramref name="position"/>; the centre names the chord under it (text changes only when it does).</summary>
-        void Point(double position, string note)
+        /// <summary>The hand at <paramref name="position"/>: the chord under it lit, the others muted.</summary>
+        void Point(double position)
         {
             UiKit.Show(ring.Root, true);
             ring.SetPointer(position);
-            if (ring.Current == ringCurrent) return;
-            ringCurrent = ring.Current;
-            string roman = ringCurrent >= 0 ? ring.Chords[ringCurrent].Roman : "";
-            ring.SetCenter(roman.Length > 0 ? Esc(roman) : "·", note);
+        }
+
+        // ------------------------------------------------------------------ the path's name
+
+        void BuildPathTitle()
+        {
+            pathTitle = UiKit.Text("Path Name", canvas.transform, 44, new Color(.97f, .975f, .985f, 1f), TextAlignmentOptions.TopLeft, bold: true);
+            UiKit.Outline(pathTitle);
+            pathTitle.characterSpacing = 1f;
+            pathTitle.textWrappingMode = TextWrappingModes.Normal;
+            pathTitle.overflowMode = TextOverflowModes.Overflow;
+            UiKit.Show(pathTitle, false);
+            // A rebuilt HUD starts blank: the name is set again on the next refresh.
+            pathTitleText = "";
+            pathPlaying = false;
+            FitPathTitle();
+        }
+
+        /// <summary>The featured path playing (its mix, its duet loop or its previews), else null.</summary>
+        Playback.FeaturedPath? PlayingPath()
+        {
+            Walkthrough.WalkthroughDirector? d = loader != null ? loader.Director : null;
+            return d != null && d.IsTouring && d.Mode == Walkthrough.TourMode.Path ? d.CurrentPath : null;
+        }
+
+        /// <summary>The playing featured path's name ("Aeolian Rock"), shown top left; the legend hides meanwhile (the layout calls it first, so it lays out the HUD as it will show).</summary>
+        public void RefreshPathTitle()
+        {
+            if (pathTitle == null) return;
+            Playback.FeaturedPath? path = PlayingPath();
+            bool playing = path != null;
+            if (playing != pathPlaying) RefreshLegend();
+            string text = path != null ? path.DisplayName : "";
+            if (text != pathTitleText)
+            {
+                pathTitleText = text;
+                pathTitle.text = Esc(text);
+                FitPathTitle();
+            }
+            UiKit.Show(pathTitle, playing && text.Length > 0);
+        }
+
+        /// <summary>
+        /// Where the path's name goes: <paramref name="slot"/> (reference px, origin bottom-left, on a
+        /// canvas <paramref name="canvasHeight"/> tall; its top edge and width are kept), at
+        /// <paramref name="maxSize"/> shrinking to <paramref name="minSize"/>, then wrapping onto more
+        /// lines downward.
+        /// </summary>
+        public void PlacePathTitle(Rect slot, float canvasHeight, float maxSize, float minSize)
+        {
+            if (pathTitle == null) return;
+            slot = new Rect(slot.xMin, canvasHeight - slot.yMax, slot.width, slot.height);
+            if (slot == pathTitleSlot && Mathf.Approximately(maxSize, pathTitleMax) && Mathf.Approximately(minSize, pathTitleMin)) return;
+            pathTitleSlot = slot;
+            pathTitleMax = maxSize;
+            pathTitleMin = minSize;
+            FitPathTitle();
+        }
+
+        void FitPathTitle()
+        {
+            if (pathTitle == null || pathTitleSlot.width <= 0f) return;
+            RectTransform r = pathTitle.rectTransform;
+            r.anchorMin = r.anchorMax = new Vector2(0f, 1f);
+            r.pivot = new Vector2(0f, 1f);
+            r.anchoredPosition = new Vector2(pathTitleSlot.xMin, -pathTitleSlot.yMin);
+            pathTitle.textWrappingMode = TextWrappingModes.NoWrap;
+            UiKit.FitWidth(pathTitle, pathTitleSlot.width, pathTitleMax, pathTitleMin);
+            pathTitle.textWrappingMode = TextWrappingModes.Normal;
+            float h = Mathf.Ceil(pathTitle.GetPreferredValues(pathTitle.text, pathTitleSlot.width, 0f).y);
+            r.sizeDelta = new Vector2(pathTitleSlot.width, Mathf.Max(h, pathTitleSlot.height));
         }
 
         /// <summary>Colour of strong-match highlights in the HUD and legend.</summary>
@@ -472,6 +555,8 @@ namespace MusicHistory.Viewer
             AddPanelRect(legend.Rect, w, h, scale);
             AddPanelRect(info.Rect, w, h, scale);
             AddPanelRect(tour.Rect, w, h, scale);
+            if (ring != null) AddPanelRect(ring.Root, w, h, scale);
+            if (pathTitle != null) AddPanelRect(pathTitle.rectTransform, w, h, scale);
             if (ExtraPanels != null)
             {
                 IReadOnlyList<RectTransform> extra = ExtraPanels();
@@ -501,6 +586,19 @@ namespace MusicHistory.Viewer
             return new Rect(min, size);
         }
 
+        /// <summary>Destroys the canvas and the wheel's bloom rig (the loader clears or rebuilds).</summary>
+        public void Discard()
+        {
+            ring?.Dispose();
+            if (canvas != null)
+            {
+                if (Application.isPlaying) Destroy(canvas.gameObject);
+                else DestroyImmediate(canvas.gameObject);
+            }
+        }
+
+        void OnDestroy() => ring?.Dispose();
+
         void AddPanelRect(RectTransform r, float w, float h, float scale)
         {
             if (r == null || !r.gameObject.activeInHierarchy) return;
@@ -529,6 +627,13 @@ namespace MusicHistory.Viewer
 
         public void ForceUpdate()
         {
+            if (ring != null)
+            {
+                if (SongCardVisible) RefreshRing();
+                RefreshPathTitle();
+                Vector2Int screen = ViewerLayout.CurrentScreen();
+                ring.SyncBloom(ScaleFor(screen.x, screen.y), true);
+            }
             // Every text on the canvas (the featured-paths panel's too), for edit-mode captures.
             foreach (TMP_Text t in canvas.GetComponentsInChildren<TMP_Text>(false))
                 t.ForceMeshUpdate();

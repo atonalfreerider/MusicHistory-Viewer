@@ -17,9 +17,12 @@ namespace MusicHistory.Viewer
     /// frame (note-name ticks). Every song's melody of the path is drawn on top of the others in its
     /// own muted colour (legend: title, year); the melodies whose vocal is audible right now are
     /// bright and thicker, each with a point of bloom light riding on it at the playhead and the
-    /// melody's pitch there. Along the bottom, the chord colour strip (the viewer's key palette:
-    /// circle-of-fifths hue, minor darker), and during a changeover a thin strip of the vocal's own
-    /// chords above it.
+    /// melody's pitch there. Along the bottom, the chord timeline: one cell per chord in the chord
+    /// colours (<see cref="ChordPalette"/>, Resonance's tonal colours against the key's tonic), named
+    /// by what it is to the key ("Key", "Fifth", "Minor 3rd" ...); the chord sounding keeps its full
+    /// colour and is lit with bloom (a glow shape on <see cref="MelodyLightRig"/>), every other chord
+    /// is muted. During a changeover a thin strip of the vocal's own chords sits above it, lit and
+    /// muted the same way.
     ///
     /// Three ways to show time (DESIGN.md §14, §16):
     /// <list type="bullet">
@@ -174,6 +177,13 @@ namespace MusicHistory.Viewer
         float pitchLo = 55, pitchHi = 79;
         int stripSong = -2, vocalStripSong = -2, backingSong = -1;
         IReadOnlyList<MashupChord>? stripChords, vocalChords;
+        int stripTonic, vocalTonic;
+        // The chord sounding (and, panning, which image of it: unwrapped beat = beat + litImage · period).
+        MashupChord? litChord, litVocal;
+        int litImage;
+        double windowLo, windowHi;
+        readonly List<string> labelTexts = new();
+        readonly List<StripCell> cells = new();
         int tagBar = -1;
         string tagRoman = "";
         readonly List<int> vocals = new(), instrumentals = new();
@@ -249,17 +259,44 @@ namespace MusicHistory.Viewer
             }
         }
 
-        /// <summary>The roman numerals in the chord strip, in order (for validation).</summary>
+        /// <summary>The chord names in the chord strip, in drawing order (plain text, for validation).</summary>
         public string ChordText
         {
             get
             {
                 StringBuilder b = new();
-                foreach (TextMeshProUGUI t in romanLabels)
-                    if (t.gameObject.activeSelf) b.Append(t.text).Append(' ');
-                return b.ToString().Trim();
+                for (int i = 0; i < romanLabels.Count && i < labelTexts.Count; i++)
+                    if (romanLabels[i].gameObject.activeSelf) b.Append(labelTexts[i]).Append(" | ");
+                return b.ToString().TrimEnd(' ', '|');
             }
         }
+
+        /// <summary>One drawn cell of the chord strip (content px).</summary>
+        public readonly struct StripCell
+        {
+            public readonly MashupChord Chord;
+            public readonly float X0, X1;
+            public readonly bool Lit;
+            public readonly Color Color;
+
+            public StripCell(MashupChord chord, float x0, float x1, bool lit, Color color)
+            {
+                Chord = chord;
+                X0 = x0;
+                X1 = x1;
+                Lit = lit;
+                Color = color;
+            }
+        }
+
+        /// <summary>The main strip's cells as last drawn.</summary>
+        public IReadOnlyList<StripCell> StripCells => cells;
+        /// <summary>The chord sounding on the main strip (null between chords).</summary>
+        public MashupChord? LitChord => litChord;
+        /// <summary>The tonic the main strip's chords are coloured and named against (normalized frame).</summary>
+        public int StripTonic => stripTonic;
+        /// <summary>HDR intensity of the current chord's light on the strip.</summary>
+        [Min(0f)] public float ChordGlow = .6f;
 
         public string PitchLabelText
         {
@@ -485,7 +522,7 @@ namespace MusicHistory.Viewer
             // Where the playhead is, who sings, which chords sound.
             double beat;
             int inst, vocalOwn;
-            MashupChord? chord;
+            MashupChord? chord, vocalChord;
             if (duet != null)
             {
                 double t = d.LoopSeconds;
@@ -494,9 +531,10 @@ namespace MusicHistory.Viewer
                 inst = duet.RootSong;
                 vocalOwn = -1;
                 backingSong = -1;
-                if (!ReferenceEquals(stripChords, duet.Chords) || stripSong != inst) SetStrip(inst, duet.Chords);
+                if (!ReferenceEquals(stripChords, duet.Chords) || stripSong != inst) SetStrip(inst, duet.Chords, ChordKey.TonicOf(duet.Chords, duet.Key));
                 if (vocalStripSong != -1) SetVocalStrip(-1, null);
                 chord = duet.ChordAt(beat);
+                vocalChord = null;
             }
             else
             {
@@ -506,9 +544,10 @@ namespace MusicHistory.Viewer
                 beat = m.PhraseBeatAt(t);
                 // Chord strips: the instrumental playing; during a changeover, the vocal's own chords above it.
                 inst = seg != null ? seg.InstrumentalSong : instrumentals.Count > 0 ? instrumentals[0] : -1;
-                if (inst != stripSong) SetStrip(inst, inst >= 0 ? m.Songs[inst].Chords : null);
+                if (inst != stripSong) SetStrip(inst, inst >= 0 ? m.Songs[inst].Chords : null, inst >= 0 ? ChordKey.TonicOf(m.Songs[inst].Chords, seg?.Key) : 0);
                 vocalOwn = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.VocalSong >= 0 && seg.VocalSong != inst ? seg.VocalSong : -1;
                 if (vocalOwn != vocalStripSong) SetVocalStrip(vocalOwn, vocalOwn >= 0 ? m.Songs[vocalOwn].Chords : null);
+                vocalChord = vocalOwn >= 0 ? m.Songs[vocalOwn].ChordAt(beat) : null;
                 // During a changeover the backing's own melody (the tune this instrumental was made for)
                 // is highlighted too, a step below the vocal singing over it: two melodies on one track.
                 backingSong = seg != null && seg.Kind == MashupSegmentKind.Changeover && seg.InstrumentalSong >= 0 &&
@@ -553,6 +592,21 @@ namespace MusicHistory.Viewer
                 PlaceContent(-(float)(drift * PixelsPerBeat));
             }
 
+            // The chord sounding keeps its colour (and its light); the others are muted.
+            int image = scrolling && period > 0 ? (int)Math.Round((anchor + drift - beat) / period) : 0;
+            if (!ReferenceEquals(chord, litChord) || !ReferenceEquals(vocalChord, litVocal) || image != litImage)
+            {
+                litChord = chord;
+                litVocal = vocalChord;
+                litImage = image;
+                if (scrolling) DrawStripsWindow();
+                else
+                {
+                    BuildChordStrip();
+                    BuildVocalStrip();
+                }
+            }
+
             // Playhead through the graph and the strips.
             Rect plot = Plot;
             float x = scrolling ? ScrollHeadX : BeatX(beat);
@@ -561,14 +615,14 @@ namespace MusicHistory.Viewer
             UiKit.Place(playheadCap.rectTransform, x - 4f, plot.yMin - 8f, 8f, 8f);
             int bar = beatsPerBar > 0 ? (int)Math.Floor(beat / beatsPerBar) + 1 : 1;
             // The tag text changes once a bar or chord (no string per frame).
-            string roman = chord != null ? chord.Roman : "";
-            if (bar != tagBar || !ReferenceEquals(roman, tagRoman))
+            string roman = chord != null ? ChordNames.Label(chord, stripTonic) : "";
+            if (bar != tagBar || roman != tagRoman)
             {
                 tagBar = bar;
                 tagRoman = roman;
                 UiKit.SetText(playheadTag, roman.Length > 0 ? $"bar {bar} · {GraphHud.Esc(roman)}" : $"bar {bar}");
             }
-            float tagW = 90f;
+            float tagW = 150f;
             UiKit.Place(playheadTag.rectTransform, Mathf.Clamp(x - tagW / 2, plot.xMin, plot.xMax - tagW), plot.yMin - 18f, tagW, 13f);
             if (chord != null)
             {
@@ -585,15 +639,23 @@ namespace MusicHistory.Viewer
                     x0 = BeatX(chord.Start);
                     x1 = BeatX(Math.Min(chord.End, period));
                 }
-                UiKit.Show(chordCurrent, true);
+                UiKit.Show(chordCurrent, false);
                 UiKit.Show(chordUnderline, true);
-                UiKit.Place(chordCurrent.rectTransform, x0, ChordTop, Mathf.Max(1f, x1 - x0), ChordStripHeight);
                 UiKit.Place(chordUnderline.rectTransform, x0 + 1f, ChordTop + ChordStripHeight + 2f, Mathf.Max(1f, x1 - x0 - 2f), 3f);
+                // Its light, on the panel (clipped to the plot while the graph pans).
+                float shift = scrolling ? ContentShift : 0f;
+                float g0 = Mathf.Max(plot.xMin, x0 + shift), g1 = Mathf.Min(plot.xMax, x1 + shift);
+                bool glow = g1 - g0 > 1f;
+                // As bright for every chord: its brightest channel reaches ChordGlow (dark minor colours too).
+                Color glowColor = ChordPalette.Of(chord, stripTonic);
+                rig?.SetGlowRect(0, glow, new Rect(g0 + 1f, ChordTop + 1f, Mathf.Max(1f, g1 - g0 - 2f), ChordStripHeight - 2f), 6f,
+                    glowColor, ChordGlow / Mathf.Max(.2f, Mathf.Max(glowColor.r, glowColor.g, glowColor.b)));
             }
             else
             {
                 UiKit.Show(chordCurrent, false);
                 UiKit.Show(chordUnderline, false);
+                rig?.SetGlowRect(0, false, default, 0f, Color.black, 0f);
             }
 
             // A point of light on every playing melody, at the playhead and the melody's pitch there
@@ -721,6 +783,9 @@ namespace MusicHistory.Viewer
             scrolling = duet != null || portraitLayout;
             height = HeightFor(portrait);
             tagBar = -1;
+            tagRoman = "";
+            litChord = litVocal = null;
+            litImage = 0;
             stripSong = -2;
             vocalStripSong = -2;
             stripChords = vocalChords = null;
@@ -948,18 +1013,20 @@ namespace MusicHistory.Viewer
         {
             while (romanLabels.Count <= i)
                 romanLabels.Add(UiKit.Text($"Chord {romanLabels.Count + 1}", content, 13, TextColor, TextAlignmentOptions.Center, bold: true));
+            while (labelTexts.Count <= i) labelTexts.Add("");
             TextMeshProUGUI t = romanLabels[i];
             UiKit.Show(t, true);
             return t;
         }
 
-        /// <summary>Colour of a chord cell: the shared chord palette (<see cref="ChordPalette"/>, also the chord ring's).</summary>
-        public static Color ChordColor(MashupChord c) => ChordPalette.Of(c);
+        /// <summary>Colour of a chord cell against <paramref name="tonicPc"/>: the shared chord palette (<see cref="ChordPalette"/>, also the wheel's).</summary>
+        public static Color ChordColor(MashupChord c, int tonicPc) => ChordPalette.Of(c, tonicPc);
 
-        void SetStrip(int song, IReadOnlyList<MashupChord>? chords)
+        void SetStrip(int song, IReadOnlyList<MashupChord>? chords, int tonicPc)
         {
             stripSong = song;
             stripChords = chords;
+            stripTonic = tonicPc;
             if (scrolling) windowDirty = true;
             else BuildChordStrip();
         }
@@ -968,6 +1035,7 @@ namespace MusicHistory.Viewer
         {
             vocalStripSong = song;
             vocalChords = chords;
+            vocalTonic = chords != null ? ChordKey.TonicOf(chords, null) : 0;
             UiKit.Show(vocalLabel, song >= 0);
             if (scrolling) windowDirty = true;
             else BuildVocalStrip();
@@ -976,32 +1044,63 @@ namespace MusicHistory.Viewer
         void BuildChordStrip()
         {
             chordStrip.Clear();
+            cells.Clear();
             Rect area = ChordRect;
             chordStrip.AddRect(area.xMin, area.yMin, area.width, area.height, new Color(1, 1, 1, .05f));
             int label = 0;
             if (stripChords != null)
                 foreach (MashupChord c in stripChords)
-                    label = AddChordCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)), label);
+                    label = AddChordCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)), ReferenceEquals(c, litChord), label);
             for (int i = label; i < romanLabels.Count; i++) UiKit.Show(romanLabels[i], false);
             chordStrip.Commit();
         }
 
-        /// <summary>One chord cell between x0 and x1 (content px), with its roman numeral when it is wide enough.</summary>
-        int AddChordCell(MashupChord c, float x0, float x1, int label)
+        /// <summary>
+        /// One chord cell between x0 and x1 (content px), named when it is wide enough (the full name,
+        /// shrunk to fit, else the short form). <paramref name="lit"/>: the chord sounding (full colour);
+        /// while one sounds, the others are muted.
+        /// </summary>
+        int AddChordCell(MashupChord c, float x0, float x1, bool lit, int label)
         {
             if (x1 - x0 < .5f) return label;
             Rect area = ChordRect;
-            Color col = ChordColor(c);
-            Color top = Color.Lerp(col, Color.white, .08f), bottom = Color.Lerp(col, Color.black, .18f);
-            top.a = bottom.a = .95f;
+            Color full = ChordColor(c, stripTonic);
+            Color col = lit || litChord == null ? full : ChordPalette.Muted(full);
+            cells.Add(new StripCell(c, x0, x1, lit, col));
+            Color top = Color.Lerp(col, Color.white, lit ? .12f : .06f), bottom = Color.Lerp(col, Color.black, .18f);
+            top.a = bottom.a = lit || litChord == null ? .97f : .9f;
             // A hairline between neighbouring cells.
             chordStrip.AddGradientRect(x0 + .5f, area.yMin, Mathf.Max(.5f, x1 - x0 - 1f), area.height, top, bottom);
-            if (x1 - x0 < 18f || c.Roman.Length == 0) return label;
-            TextMeshProUGUI t = RomanLabel(label++);
-            UiKit.SetText(t, GraphHud.Esc(c.Roman));
-            t.color = ChordPalette.LabelOn(col);
+            float avail = x1 - x0 - 6f;
+            if (avail < 16f) return label;
+            string suffix = ChordNames.Suffix(c.Quality);
+            TextMeshProUGUI t = RomanLabel(label);
+            t.fontStyle = lit ? FontStyles.Bold : FontStyles.Normal;
+            string plain = "";
+            foreach (string name in new[] { ChordNames.Name(c.RootPc, stripTonic, c.Quality), ChordNames.ShortName(c.RootPc, stripTonic) })
+            {
+                UiKit.SetText(t, ChordNames.Rich(name, suffix, 75));
+                UiKit.FitWidth(t, avail, 13f, 9.5f);
+                if (t.GetPreferredValues(t.text, 100000f, 0f).x <= avail + .5f)
+                {
+                    plain = ChordNames.Plain(name, suffix);
+                    break;
+                }
+            }
+            if (plain.Length == 0)
+            {
+                UiKit.Show(t, false);
+                return label;
+            }
+            labelTexts[label] = plain;
+            // The lit cell glows bright: white with a dark outline reads on it.
+            if (lit) UiKit.Outline(t);
+            else if (t.font != null && t.fontSharedMaterial != t.font.material) t.fontSharedMaterial = t.font.material;
+            Color text = lit ? Color.white : ChordPalette.LabelOn(col);
+            if (!lit && litChord != null) text.a *= .8f;
+            t.color = text;
             UiKit.Place(t.rectTransform, x0, area.yMin, x1 - x0, area.height);
-            return label;
+            return label + 1;
         }
 
         void BuildVocalStrip()
@@ -1009,15 +1108,16 @@ namespace MusicHistory.Viewer
             vocalStrip.Clear();
             if (vocalChords != null)
                 foreach (MashupChord c in vocalChords)
-                    AddVocalCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)));
+                    AddVocalCell(c, BeatX(c.Start), BeatX(Math.Min(c.End, period)), ReferenceEquals(c, litVocal));
             vocalStrip.Commit();
         }
 
-        void AddVocalCell(MashupChord c, float x0, float x1)
+        void AddVocalCell(MashupChord c, float x0, float x1, bool lit)
         {
             if (x1 - x0 < .5f) return;
-            Color col = ChordColor(c);
-            col.a = .9f;
+            Color col = ChordColor(c, vocalTonic);
+            if (!lit && litVocal != null) col = ChordPalette.Muted(col);
+            col.a = .92f;
             vocalStrip.AddRect(x0 + .5f, VocalTop, Mathf.Max(.5f, x1 - x0 - 1f), VocalStripHeight, col);
         }
 
@@ -1060,29 +1160,9 @@ namespace MusicHistory.Viewer
             bars.Commit();
 
             // Chord strips.
-            chordStrip.Clear();
-            Rect area = ChordRect;
-            chordStrip.AddRect(ContentX(lo), area.yMin, ContentX(hi) - ContentX(lo), area.height, new Color(1, 1, 1, .05f));
-            int label = 0;
-            vocalStrip.Clear();
-            foreach ((IReadOnlyList<MashupChord>? list, bool vocal) in new[] { (stripChords, false), (vocalChords, true) })
-            {
-                if (list == null) continue;
-                foreach (MashupChord c in list)
-                {
-                    double end = Math.Min(c.End, p);
-                    (int a, int b) = MelodyScroll.Images(c.Start, end, lo, hi, p);
-                    for (int k = a; k <= b; k++)
-                    {
-                        float x0 = ContentX(Math.Max(lo, c.Start + k * p)), x1 = ContentX(Math.Min(hi, end + k * p));
-                        if (vocal) AddVocalCell(c, x0, x1);
-                        else label = AddChordCell(c, x0, x1, label);
-                    }
-                }
-            }
-            for (int i = label; i < romanLabels.Count; i++) UiKit.Show(romanLabels[i], false);
-            chordStrip.Commit();
-            vocalStrip.Commit();
+            windowLo = lo;
+            windowHi = hi;
+            DrawStripsWindow();
 
             // Melodies.
             foreach (LineView l in lines)
@@ -1121,6 +1201,41 @@ namespace MusicHistory.Viewer
                 l.Line.Commit();
                 l.Glow.Commit();
             }
+        }
+
+        /// <summary>
+        /// The panning graph's chord strips over the drawn window (every image of every chord that
+        /// reaches it); only the sounding chord's image under the playhead is lit.
+        /// </summary>
+        void DrawStripsWindow()
+        {
+            double lo = windowLo, hi = windowHi, p = period > 0 ? period : 32;
+            chordStrip.Clear();
+            cells.Clear();
+            Rect area = ChordRect;
+            chordStrip.AddRect(ContentX(lo), area.yMin, ContentX(hi) - ContentX(lo), area.height, new Color(1, 1, 1, .05f));
+            int label = 0;
+            vocalStrip.Clear();
+            foreach ((IReadOnlyList<MashupChord>? list, bool vocal) in new[] { (stripChords, false), (vocalChords, true) })
+            {
+                if (list == null) continue;
+                MashupChord? lit = vocal ? litVocal : litChord;
+                foreach (MashupChord c in list)
+                {
+                    double end = Math.Min(c.End, p);
+                    (int a, int b) = MelodyScroll.Images(c.Start, end, lo, hi, p);
+                    for (int k = a; k <= b; k++)
+                    {
+                        float x0 = ContentX(Math.Max(lo, c.Start + k * p)), x1 = ContentX(Math.Min(hi, end + k * p));
+                        bool on = ReferenceEquals(c, lit) && k == litImage;
+                        if (vocal) AddVocalCell(c, x0, x1, on);
+                        else label = AddChordCell(c, x0, x1, on, label);
+                    }
+                }
+            }
+            for (int i = label; i < romanLabels.Count; i++) UiKit.Show(romanLabels[i], false);
+            chordStrip.Commit();
+            vocalStrip.Commit();
         }
 
         // ------------------------------------------------------------------ legend

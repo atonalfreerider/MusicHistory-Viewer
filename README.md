@@ -38,7 +38,7 @@ next to `data/graph/` finds `data/songs/`.
 
 | Input | Action |
 |---|---|
-| Hover | Highlights the song, the songs that influenced it and the songs it influenced. Shows its secondary edges and its card at the top right: title, artist · year, key · BPM and its main loop as a chord ring (see "The song card"). The lineage and the shared identity are on the edge card (click an edge). |
+| Hover | Highlights the song, the songs that influenced it and the songs it influenced. Shows its secondary edges and its main loop as a chord wheel at the top right (see "The chord wheel"). The lineage and the shared identity are on the edge card (click an edge). |
 | Left click | Selects a song: a sticky focus that becomes the walkthrough's target. A click on no bubble but within 7 px (`EdgePickPixels`) of a drawn edge selects the edge: its card replaces the song info, and a family tour plays its identity. Clicking empty space clears both. |
 | Right drag · W A S D · Q E · wheel | Look · move · down/up · dolly. Hold Shift to move faster. |
 | R / Home | Reset to the overview. |
@@ -146,10 +146,13 @@ whole mix with the changeovers (white) and morphs (accent) marked above it.
   past the phrase's end is drawn in two pieces.
 - The melodies whose vocal is audible now are bright and thicker, each with a **point of light**
   riding on it at the playhead's beat and the melody's pitch there (dimmer while the voice breathes).
-- The chord colour strip along the bottom shows the instrumental's chords in the viewer's key palette
-  (circle-of-fifths hue, minor darker) with roman numerals, the current chord underlined; during a
-  changeover a thin strip above it shows the vocal's own chords, so the match is visible.
-- A playhead with a `bar n · <chord>` tag runs through the graph and the strips.
+- The chord timeline along the bottom shows the instrumental's chords in the chord colours (see
+  "Chord colours and names" below), each cell named by what the chord is to the key ("Key", "Fifth",
+  "Major 6th m" …; the short form, "5th", in a narrow cell; nothing in a sliver). The chord sounding
+  keeps its full colour, is underlined and glows with bloom (a glow shape on the melody light rig);
+  every other chord is muted. During a changeover a thin strip above it shows the vocal's own chords
+  (lit and muted the same way), so the match is visible.
+- A playhead with a `bar n · <chord name>` tag runs through the graph and the strips.
 
 **Vertical (portrait) layout.** The melody graph is three times larger: three times the pixels per
 beat and per semitone (the plot is 498 px tall instead of 166; the panel 604 instead of 272, the
@@ -186,6 +189,10 @@ leaves the paths unnarrated (the console says which).
   (`MashupPlayer.DuckGain` stays 1; the `DuckEnvelope` is kept for when a voice comes back). The mix
   is the master: a pause, a seek (Next, Back, a chip, Enter) or Stop changes the caption at once;
   N shows or hides the captions.
+- **Captions-only cues.** A cue with `file`, `duck_db` and `inflection` all null (no voice was
+  synthesized; `seconds` is the reading time) is valid: no WAV is expected, it never ducks, and its
+  caption and photo show like any other (`NarrationCue.CaptionsOnly`). A cue with only some of the
+  three null is still reported as a contract problem.
 - **Caption and photo card** (`Viewer/NarrationOverlay.cs`). The line shows as a subtitle (our own
   narration, never lyrics), and the cue's image as a card with the photo, whom it shows and, always,
   `Photo: <author>, <license> (Wikimedia Commons)` under it. Both fade and slide in and out. A photo
@@ -275,17 +282,67 @@ one of their bubbles is in view) and shared with the narration's popup card, wit
 quads have no collider, so hover and click pick the bubble as before; smaller than 12 px on screen
 they are not drawn. The credit stays on the popup card.
 
-## The song card
+## The chord wheel
 
-The info panel at the top right is a compact card: the title, `artist · year`, `key · BPM`, and the
-song's main loop (`song_node.main_loop`, its first reading: roman numerals relative to the major, so
-in the normalized C major frame) as a ring (`Viewer/ChordRing.cs`): one arc per chord, clockwise
-from 12 o'clock (marked), in the same chord colours as the melody graph's chord strip
-(`ChordPalette`: the key palette at the chord's root, minor and diminished darker), its roman
-numeral beside it. While a mashup mix plays, the ring shows the progression heard (the
-instrumental's chords over the phrase, sized by their length) with a hand at the music's place and
-the chord under it in the middle; during a duet loop, the bed's chords over the current phrase. The
-lineage and the shared identity moved to the edge card (click an edge).
+The focused or playing song's card is a chord wheel and nothing else (`Viewer/ChordRing.cs`,
+`ChordRingView`): no panel behind it and no title, artist, key or BPM text (the now-playing strip
+has the key and BPM). It floats over the graph, 2.5 times the old card's ring (a 470 px square,
+the ring 370 px across): **top right** in landscape, **top centre** in portrait (centred in the
+room right of the legend while the legend shows). Thin dark under-strokes and outlined, shadowed
+text keep it legible over bright bubbles and edges. One arc per chord, clockwise from 12 o'clock
+(marked), sized by its length, in the chord colours, each named inside its arc along the arc
+(upright on the lower half): the full name when it fits, else the short form, else nothing, so
+names never overlap however many arcs there are.
+
+- Idle (a hovered or clicked song): its main loop (`song_node.main_loop`, the first reading: roman
+  numerals relative to the major, in the normalized C major frame), every chord in full colour,
+  unlit, read against the song's tonic (C, or A for a minor song).
+- While a mashup mix plays: the progression heard (the instrumental's chords over the phrase); during
+  a duet loop, the bed's chords over the current phrase. A hand marks the music's place; the chord
+  under it keeps its full colour, grows and is **lit with bloom** (an HDR glow arc on a second
+  `MelodyLightRig`, on layer 30, with its own camera and bloom volume, composited additively onto
+  the wheel); every other chord is muted; the middle names it.
+
+The lineage and the shared identity are on the edge card (click an edge; top right, with a panel).
+
+### Chord colours and names
+
+**Colours** (`ChordPalette`) are Resonance-2's pattern-wheel convention, ported from
+`Resonance-2/Assets/TonalColorField.cs` (`Pitch`, `Chord`; same constants and maths): colour is
+tonality. The key's own chord is blue, the fourth red, the fifth green, and every other degree a
+fixed blend by its interval above the tonic; a minor chord is pulled toward violet and darkened
+(×0.82). As in Resonance, "minor" means the quality starts with "m" but not "maj" (a diminished
+chord keeps its degree's colour). The roots in the viewer's data are in the normalized C major /
+A minor frame and are read against the tonic of the key heard (`ChordKey`): the tonic the chords'
+roman numerals imply (they are written in each song's own mode, so "i" on A means A minor, read
+against A, as Resonance reads a minor key against its minor tonic), else the key name's mode
+(C for major, A for minor). Muted chords are mostly desaturated and darker, their hue kept.
+
+**Names** (`ChordNames`) follow Resonance's torus labels, by the root's interval above the tonic:
+
+| Interval | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Name | Key | Neapolitan | 2nd Maj Dom | Minor 3rd | Major 3rd | Fourth | Tritone | Fifth | Minor 6th | Major 6th | Minor 7th | Major 7th |
+| Short | Key | Neap | 2nd | min3 | maj3 | 4th | Trit | 5th | min6 | maj6 | min7 | maj7 |
+
+The second is named for its usual role, the major chord on it that acts as V of V ("2nd Maj Dom");
+any other chord there is "2nd". The chord's quality follows as a small suffix: `m` minor, `°`
+diminished, `+` augmented, `sus`; a major chord has none. So in C major Am is "Major 6th m" and G is
+"Fifth"; in A minor Am is "Key m", Dm "Fourth m", E "Fifth" and G "Minor 7th".
+
+## The path's name and highlighted bubbles
+
+While a featured path plays (its mix, its duet loop or its previews, recordings included) its name
+sits top left in large outlined type, no box: paths.json's optional `name` ("Aeolian Rock"), else
+the path id in title case with small words lower case ("Rock and Roll Twelve Bars", "Summer Place
+to Barbie Girl"). The legend makes way while it shows.
+
+The songs a tour lights (the playing song; the vocal's and the instrumental's songs in a changeover;
+both singers of a duet) grow to three times their size, easing in and out over 0.4 s
+(`SongNode.SetHighlighted`): the whole node scales, so the bubble, its glow and photo and its
+picking collider follow; the label's anchor radius and the edges' ends follow too, and the camera
+frames the size they are growing to. Hover, click, edge cards and the paths list's route preview
+never resize a bubble.
 
 ## Identity lineages (DESIGN §8b)
 
@@ -410,7 +467,7 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Playback/DuetCatalog.cs`, `DuetPlayer.cs` | `duets.json` v1 reader (no Unity API): segments, pairs, beats, the bed's chords, songs, the loop clock, contract checks, binding; the seamless loop player. |
 | `Viewer/MelodyScroll.cs` | The panning melody graph's maths (no Unity API): wrapping, pieces in unwrapped beats, the line's pitch, images. |
 | `Viewer/BubblePhotos.cs`, `Assets/Resources/BubblePhoto.shader` | Artist photos on the bubbles. |
-| `Viewer/ChordRing.cs` | The shared chord palette, main-loop parsing and the chord ring of the song card. |
+| `Viewer/ChordRing.cs` | The chord colours (Resonance's tonal colour field), chord names, the key a chord list is read in, main-loop parsing and the chord wheel. |
 | `Assets/MusicHistory/Editor/DuetValidation.cs` | Duet loops, the vertical melody graph and the bubble photos in edit mode. |
 | `Assets/MusicHistory/Contracts/` | Shared with the audio module (foundation, do not edit). |
 

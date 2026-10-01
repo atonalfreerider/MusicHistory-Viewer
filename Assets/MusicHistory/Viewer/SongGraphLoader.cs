@@ -579,6 +579,8 @@ namespace MusicHistory.Viewer
         /// <summary>Labels, timeline widths and HUD for <paramref name="cam"/> now (edit-mode rendering).</summary>
         public void RefreshView(Camera cam)
         {
+            // Edit-mode captures show highlighted bubbles at their full size (play mode eases them in LateUpdate).
+            if (!Application.isPlaying) SongNode.SettleScales();
             if (RouteLine != null) RouteLine.Refresh(cam);
             // Edit-mode captures: the photos of the bubbles in view (play mode loads them a few per frame).
             if (BubblePhotos != null) BubblePhotos.Refresh(cam);
@@ -588,6 +590,9 @@ namespace MusicHistory.Viewer
             Hud.ForceUpdate();
             if (MelodyGraph != null) MelodyGraph.ForceUpdate();
         }
+
+        /// <summary>Highlighted bubbles grow and shrink back smoothly (before the labels place themselves).</summary>
+        void LateUpdate() => SongNode.TickScales(Time.deltaTime);
 
         void Update()
         {
@@ -639,7 +644,7 @@ namespace MusicHistory.Viewer
             if (Labels != null) Labels.Clear();
             if (graphRoot != null) Discard(graphRoot);
             graphRoot = null;
-            if (Hud != null && Hud.Canvas != null) Discard(Hud.Canvas.gameObject);
+            if (Hud != null) Hud.Discard();
             if (MelodyGraph != null) MelodyGraph.Discard();
             if (NarrationOverlay != null) NarrationOverlay.Discard();
             ArtistImages.Release();

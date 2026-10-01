@@ -98,8 +98,9 @@ namespace MusicHistory.Viewer
                 return;
             }
             direction /= centerDistance;
-            float sourceInset = Source.Radius + EndpointPadding;
-            float targetInset = Target.Radius + EndpointPadding;
+            // From the bubbles' drawn size (a highlighted bubble is larger).
+            float sourceInset = Source.DisplayRadius + EndpointPadding;
+            float targetInset = Target.DisplayRadius + EndpointPadding;
             float insetScale = Mathf.Min(1f, centerDistance / Mathf.Max(1e-5f, sourceInset + targetInset));
             Vector3 start = from + direction * (sourceInset * insetScale);
             Vector3 targetSurface = to - direction * (targetInset * insetScale);

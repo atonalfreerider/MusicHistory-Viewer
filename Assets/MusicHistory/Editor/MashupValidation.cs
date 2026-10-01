@@ -70,7 +70,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             WriteJson(report, Path.Combine(outDir, "mashup_validation.json"));
             Debug.Log($"[validation] {report.Checks.Count - report.Failures}/{report.Checks.Count} checks passed; report in {outDir}");
@@ -436,6 +436,11 @@ namespace MusicHistory.EditorTools
 
                 // Layout at 1920x1080: clear of the HUD, the songs framed above the graph.
                 loader.RefreshView(cam);
+                // The wheel and the strip light the chord sounding; the path's name; the two songs 3x.
+                CheckLitChords(report, L, loader, cam, width, height, pixels: canonicalShots);
+                CheckWheelPlacement(report, L, loader, width, height);
+                CheckPathTitle(report, L, loader, path, width, height);
+                CheckHighlightedBubbles(report, L, loader, cam, new[] { loader.NodeById(instSong.NodeId), loader.NodeById(vocalSong.NodeId) }, width, height);
                 IReadOnlyList<Rect> rects = hud.PanelScreenRects(width, height);
                 Rect melodyRect = hud.ScreenRect(graph.PanelRect!, width, height);
                 report.Check($"{L}: the melody graph is on screen and never overlaps the strip, legend, info or button",
@@ -496,6 +501,7 @@ namespace MusicHistory.EditorTools
                 panel.HandleKey(Key.Escape);
                 graph.Refresh();
                 report.Check($"{L}: Esc stops the mix, hides the graph and returns to the list", !d.IsTouring && player.Current == null && !graph.Showing && panel.IsOpen);
+                CheckBubblesRestored(report, L, loader);
 
                 // A path without a mashup falls back to its per-step previews (or MIDI).
                 FeaturedPath? other = loader.Catalog.Paths.FirstOrDefault(p => p.IsPlayable && loader.Mashups.For(p) == null);

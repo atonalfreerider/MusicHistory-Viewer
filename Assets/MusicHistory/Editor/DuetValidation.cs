@@ -88,7 +88,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             finally
             {
@@ -653,6 +653,11 @@ namespace MusicHistory.EditorTools
                     return v.z > 0 && v.x > .02f && v.x < .98f && v.y * height > melodyRect.yMax && v.y < .98f;
                 });
                 report.Check($"{L}: the camera frames the pair above the melody graph", framed);
+                // The wheel and the bed's strip light the chord sounding; the path's name; both singers 3x.
+                CheckLitChords(report, L, loader, cam, width, height, pixels: canonicalShots);
+                CheckWheelPlacement(report, L, loader, width, height);
+                CheckPathTitle(report, L, loader, path, width, height);
+                CheckHighlightedBubbles(report, L, loader, cam, new[] { loader.NodeById(l.Songs[ma].NodeId), loader.NodeById(l.Songs[mb].NodeId) }, width, height);
                 IReadOnlyList<Rect> rects = hud.PanelScreenRects(width, height);
                 report.Check($"{L}: the melody graph is on screen and never overlaps the strip, legend, info or button",
                     NoOverlap(rects) && rects.Contains(melodyRect) && melodyRect.xMin >= 0 && melodyRect.xMax <= width && melodyRect.yMax <= height);
@@ -727,6 +732,10 @@ namespace MusicHistory.EditorTools
                     Mathf.Abs(graph.PixelsPerBeat - MelodyGraphPanel.PortraitScale * landscapePpb) < 1e-3 && Mathf.Abs(head.x - 540f) <= .5f &&
                     (pd == null || Mathf.Abs(pd.Position.x - MelodyGraphPanel.ScrollHeadX) <= .5f),
                     $"height {graph.Height:0}, plot {graph.Plot.height:0} (landscape {MelodyGraphPanel.LandscapePlotHeight:0}), ppb {graph.PixelsPerBeat:0.##} vs {landscapePpb:0.##}, playhead at {head.x:0.00} px");
+                CheckLitChords(report, L + " portrait", loader, cam, 1080, 1920, pixels: false);
+                CheckWheelPlacement(report, L + " portrait", loader, 1080, 1920);
+                CheckPathTitle(report, L + " portrait", loader, path, 1080, 1920);
+                CheckHighlightedBubbles(report, L + " portrait", loader, cam, loader.Nodes.Where(n => n.State == BubbleState.Focus).ToList(), 1080, 1920);
                 IReadOnlyList<Rect> portraitRects = hud.PanelScreenRects(1080, 1920);
                 Rect pr = hud.ScreenRect(graph.PanelRect!, 1080, 1920);
                 LayoutFrame frame = loader.Layout != null ? loader.Layout.Frame : default;
@@ -757,6 +766,7 @@ namespace MusicHistory.EditorTools
                 panel.HandleKey(Key.Escape);
                 graph.Refresh();
                 report.Check($"{L}: Esc stops the loop, hides the graph and returns to the list", !d.IsTouring && player.Current == null && !graph.Showing && panel.IsOpen);
+                CheckBubblesRestored(report, L, loader);
                 panel.HandleKey(Key.Escape);
             }
             finally
@@ -865,8 +875,10 @@ namespace MusicHistory.EditorTools
                     wraps >= 1 && worstStep < 1e-3 && worstHead <= .5 && worstLine <= .5 && lineSamples > 0,
                     $"{wraps} phrase wraps, beat step error {worstStep:0.00000}, centre {worstHead:0.000} px, line {worstLine:0.000} px ({lineSamples} samples)");
                 LayoutFrame frame = loader.Layout != null ? loader.Layout.Frame : default;
-                report.Check("portrait mix: the 3x graph sits above the narration band, the 3D view above it", frame.Vertical &&
-                    Mathf.Abs(frame.Melody.height - MelodyGraphPanel.PortraitPanelHeight) < .01f && frame.MashupView.height >= .25f,
+                // The 3D view sits between the 3x graph and the 2.5x chord wheel (at least a fifth of the screen).
+                report.Check("portrait mix: the 3x graph sits above the narration band, the 3D view above it, under the chord wheel", frame.Vertical &&
+                    Mathf.Abs(frame.Melody.height - MelodyGraphPanel.PortraitPanelHeight) < .01f && frame.MashupView.height >= .2f &&
+                    frame.MashupView.yMax * frame.Canvas.y <= frame.Wheel.yMin + .5f,
                     $"melody {frame.Melody}, view {frame.MashupView}");
                 loader.RefreshView(cam);
                 string shot = Path.Combine(outDir, "melody_portrait.png");

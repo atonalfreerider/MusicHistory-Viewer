@@ -171,6 +171,7 @@ namespace MusicHistory.Viewer
             float tanHalf = Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad);
             float fovFactor = cam.orthographic ? 1f : tanHalf / Mathf.Tan(30f * Mathf.Deg2Rad);
             float pixelHeight = Mathf.Max(1, cam.pixelHeight);
+            IReadOnlyList<Rect>? keepClear = KeepClear?.Invoke(cam);
             candidates.Clear();
             foreach (WorldLabel label in labels)
             {
@@ -211,12 +212,14 @@ namespace MusicHistory.Viewer
                 };
                 if (label.Placement == LabelPlacement.Right)
                 {
-                    // A right-side label that would run off the screen's right edge mirrors to the
-                    // bubble's left (a portrait frame is narrow); it stays mirrored while that fits.
+                    // A right-side label that would run off the screen's right edge (or under a HUD
+                    // panel, such as the chord wheel) mirrors to the bubble's left (a portrait frame
+                    // is narrow); it stays mirrored while that fits.
                     Vector3 mirrored = position - 2f * right * Vector3.Dot(position - anchor, right);
                     Vector3 msp = cam.WorldToScreenPoint(mirrored);
                     Rect left = new(msp.x - size.x, msp.y - size.y * .5f, size.x, size.y);
-                    bool rightFits = label.ScreenRect.xMax <= cam.pixelWidth, leftFits = left.xMin >= 0;
+                    bool rightFits = label.ScreenRect.xMax <= cam.pixelWidth && Clear(label.ScreenRect, keepClear);
+                    bool leftFits = left.xMin >= 0 && Clear(left, keepClear);
                     bool flip = label.Flipped ? leftFits || !rightFits : !rightFits && leftFits;
                     if (flip != label.Flipped)
                     {
@@ -245,7 +248,6 @@ namespace MusicHistory.Viewer
             // Greedy declutter: highest priority first; a label stays only if it overlaps no kept one.
             candidates.Sort((a, b) => b.Priority.CompareTo(a.Priority));
             placed.Clear();
-            IReadOnlyList<Rect>? keepClear = KeepClear?.Invoke(cam);
             Rect screen = new(0, 0, cam.pixelWidth, cam.pixelHeight);
             foreach (WorldLabel label in candidates)
             {
@@ -268,6 +270,14 @@ namespace MusicHistory.Viewer
                 SetPlaced(label, clear);
                 if (clear) placed.Add(r);
             }
+        }
+
+        static bool Clear(Rect r, IReadOnlyList<Rect>? panels)
+        {
+            if (panels == null) return true;
+            for (int i = 0; i < panels.Count; i++)
+                if (r.Overlaps(panels[i])) return false;
+            return true;
         }
 
         static void SetPlaced(WorldLabel label, bool shown)

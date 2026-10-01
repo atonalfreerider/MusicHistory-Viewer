@@ -45,6 +45,9 @@ namespace MusicHistory.Viewer
     /// <see cref="EndTour"/>. While the featured-paths panel is open, the hovered or selected
     /// path's route rests on the graph (<see cref="SetRoutePreview"/>): its songs and edges glow,
     /// everything else dims; hovering a song still shows that song.
+    /// The tour steps (<see cref="ShowTourStep"/>, <see cref="ShowPathStep"/>, <see cref="ShowDuetStep"/>)
+    /// grow the songs they light to three times their size (<see cref="SongNode.SetHighlighted"/>);
+    /// hover, click, edge cards and route previews never resize a bubble.
     /// </summary>
     public sealed class HoverHighlighter : MonoBehaviour
     {
@@ -154,7 +157,10 @@ namespace MusicHistory.Viewer
             HashSet<SongNode> onRoute = new(route.Nodes);
             HashSet<InfluenceEdge> routeEdges = new(route.Edges);
             foreach (SongNode n in Loader.Nodes)
+            {
                 n.SetState(onRoute.Contains(n) ? BubbleState.Focus : BubbleState.Dimmed);
+                n.SetHighlighted(false);
+            }
             foreach (InfluenceEdge e in Loader.Edges)
             {
                 bool on = routeEdges.Contains(e);
@@ -256,8 +262,11 @@ namespace MusicHistory.Viewer
             if (data != null && data.Family(family) is IdentityFamily f)
                 foreach (FamilyMember m in f.Members) members.Add(m.NodeId);
             foreach (SongNode n in Loader.Nodes)
+            {
                 n.SetState(n == edge.Target ? BubbleState.Focus : n == edge.Source ? BubbleState.Related
                     : members.Contains(n.NodeId) ? BubbleState.Normal : BubbleState.Dimmed);
+                n.SetHighlighted(false);
+            }
             foreach (InfluenceEdge e in Loader.Edges)
             {
                 bool same = family != null && e.Record.FamilyId == family;
@@ -283,7 +292,11 @@ namespace MusicHistory.Viewer
 
             if (focus == null)
             {
-                foreach (SongNode n in nodes) n.SetState(BubbleState.Normal);
+                foreach (SongNode n in nodes)
+                {
+                    n.SetState(BubbleState.Normal);
+                    n.SetHighlighted(false);
+                }
                 foreach (InfluenceEdge e in edges)
                 {
                     e.SetState(EdgeState.Normal);
@@ -298,7 +311,11 @@ namespace MusicHistory.Viewer
             foreach (SongNode n in focus.Influencers()) related.Add(n);
             foreach (SongNode n in focus.Influenced()) related.Add(n);
             foreach (SongNode n in nodes)
+            {
                 n.SetState(n == focus ? BubbleState.Focus : related.Contains(n) ? BubbleState.Related : BubbleState.Dimmed);
+                // Hover and click never resize (the bubble under the pointer would jump).
+                n.SetHighlighted(false);
+            }
             foreach (InfluenceEdge e in edges)
             {
                 bool incident = e.Source == focus || e.Target == focus;
@@ -339,8 +356,11 @@ namespace MusicHistory.Viewer
             if (Loader.Data?.Family(familyId) is IdentityFamily f)
                 foreach (FamilyMember m in f.Members) members.Add(m.NodeId);
             foreach (SongNode n in Loader.Nodes)
+            {
                 n.SetState(n == child ? BubbleState.Focus : n == parent ? BubbleState.Related
                     : members.Contains(n.NodeId) ? BubbleState.Normal : BubbleState.Dimmed);
+                n.SetHighlighted(n.State == BubbleState.Focus);
+            }
             foreach (InfluenceEdge e in Loader.Edges)
             {
                 bool step = e == stepEdge;
@@ -374,8 +394,11 @@ namespace MusicHistory.Viewer
             HashSet<SongNode> onRoute = new(route.Nodes);
             HashSet<InfluenceEdge> routeEdges = new(route.Edges);
             foreach (SongNode n in Loader.Nodes)
+            {
                 n.SetState(n == child ? BubbleState.Focus : n == previous ? (bothLit ? BubbleState.Focus : BubbleState.Related)
                     : onRoute.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
+                n.SetHighlighted(n.State == BubbleState.Focus);
+            }
             foreach (InfluenceEdge e in Loader.Edges)
             {
                 bool on = e == stepEdge || routeEdges.Contains(e);
@@ -404,8 +427,11 @@ namespace MusicHistory.Viewer
             HashSet<SongNode> onRoute = new(route.Nodes);
             HashSet<InfluenceEdge> routeEdges = new(route.Edges);
             foreach (SongNode n in Loader.Nodes)
+            {
                 n.SetState(n == a || n == b ? BubbleState.Focus : n == marked ? BubbleState.Related
                     : onRoute.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
+                n.SetHighlighted(n.State == BubbleState.Focus);
+            }
             foreach (InfluenceEdge e in Loader.Edges)
             {
                 bool lit = e == pairEdge;

@@ -206,7 +206,7 @@ namespace MusicHistory.Viewer
             if (image != null && (!image.Showable || images.Texture(image.Id) == null)) image = null;
 
             float legendH = loader.Hud.LegendVisible ? loader.Hud.LegendRect.sizeDelta.y : 0f;
-            float infoH = loader.Hud.InfoVisible ? loader.Hud.InfoRect.sizeDelta.y : 0f;
+            float infoH = loader.Hud.EdgeCardVisible ? loader.Hud.InfoRect.sizeDelta.y : 0f;
             bool melody = loader.MelodyGraph != null && loader.MelodyGraph.Showing;
             bool photoNow = image != null || (shownImage != null && cardV > 0f);
             Vector2Int screen = ViewerLayout.CurrentScreen();

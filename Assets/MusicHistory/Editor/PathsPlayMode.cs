@@ -170,7 +170,8 @@ namespace MusicHistory.EditorTools
                 SessionState.EraseString(FullDuetKey);
                 EditorApplication.update -= Tick;
                 Application.logMessageReceivedThreaded -= OnLog;
-                EditorApplication.Exit(exitCode);
+                // Quit only a batch-mode editor (-executeMethod); an open editor stays open, out of play mode.
+                if (Application.isBatchMode) EditorApplication.Exit(exitCode);
                 return;
             }
             if (routine == null)

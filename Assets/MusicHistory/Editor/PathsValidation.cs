@@ -61,7 +61,7 @@ namespace MusicHistory.EditorTools
             catch (Exception e)
             {
                 Debug.LogException(e);
-                report.Check("no exception", false, e.GetType().Name + ": " + e.Message);
+                report.Check("no exception", false, e.GetType().Name + ": " + e.Message + " @ " + (e.StackTrace ?? "").Replace("\n", " | "));
             }
             WriteJson(report, Path.Combine(outDir, "paths_validation.json"));
             Debug.Log($"[validation] {report.Checks.Count - report.Failures}/{report.Checks.Count} checks passed; report in {outDir}");
@@ -647,7 +647,8 @@ namespace MusicHistory.EditorTools
             panel.Select(catalog.Paths.IndexOf(play));
             report.Check($"{L}: Enter plays the selected path; the list collapses into the now-playing strip",
                 panel.HandleKey(Key.Enter) && d.IsTouring && d.Mode == TourMode.Path && d.CurrentPath == play &&
-                panel.State == FeaturedPathsPanel.PanelState.Playing && panel.StripVisible && !panel.ListVisible && hud.LegendVisible && !hud.TourVisible);
+                panel.State == FeaturedPathsPanel.PanelState.Playing && panel.StripVisible && !panel.ListVisible && HudRefreshed(hud) && !hud.LegendVisible &&
+                hud.PathTitleVisible && hud.PathTitleText == play.DisplayName && !hud.TourVisible);
             // Into step 2, mid-glide (a short flight, so the camera has arrived for the picture).
             PathStep step2 = play.Steps[1];
             float fly = d.FlyDuration, grow = d.EdgeGrowDuration;
@@ -675,8 +676,11 @@ namespace MusicHistory.EditorTools
                     (step2.StartKey == step2.Key || strip.Contains($"{GraphHud.Esc(step2.StartKey)} <color={GraphHud.Muted}>→</color> <b>{GraphHud.Esc(step2.Key)}</b>")) &&
                     (Math.Abs(step2.StartBpm - step2.Bpm) < .05 || strip.Contains($"{step2.StartBpm.ToString("0.#", CultureInfo.InvariantCulture)} <color={GraphHud.Muted}>→</color> <b>{step2.Bpm.ToString("0.#", CultureInfo.InvariantCulture)}</b>")),
                     FirstLines(strip, 5));
+            loader.RefreshView(cam);
+            CheckPathTitle(report, L, loader, play, width, height);
+            CheckHighlightedBubbles(report, L, loader, cam, loader.Nodes.Where(n => n.State == BubbleState.Focus).ToList(), width, height);
             rects = hud.PanelScreenRects(width, height);
-            report.Check($"{L}: while playing, strip, legend, info and button never overlap", NoOverlap(rects),
+            report.Check($"{L}: while playing, strip, path name, wheel, info and button never overlap", NoOverlap(rects),
                 string.Join(" ", rects.Select(x => $"[{x.xMin:0},{x.yMin:0} {x.width:0}x{x.height:0}]")));
             shot = Shot("paths_playing");
             Capture(cam, loader, shot, width, height, out _);
@@ -694,7 +698,8 @@ namespace MusicHistory.EditorTools
             panel.PauseButton.onClick.Invoke();
             report.Check($"{L}: strip buttons Next, Prev and Pause drive the tour", next && prev && paused && d.ActivePlayer != null && !d.ActivePlayer.Paused);
             report.Check($"{L}: Esc during a path stops it and returns to the list", panel.HandleKey(Key.Escape) && !d.IsTouring && panel.IsOpen && panel.ListVisible &&
-                !panel.StripVisible && !(d.Preview?.IsPlaying ?? false));
+                !panel.StripVisible && !(d.Preview?.IsPlaying ?? false) && HudRefreshed(hud) && !hud.PathTitleVisible);
+            CheckBubblesRestored(report, L, loader);
             panel.StopButton!.onClick.Invoke();   // no tour: harmless
             report.Check($"{L}: Esc on the list closes it; legend and walkthrough bar come back",
                 panel.HandleKey(Key.Escape) && panel.State == FeaturedPathsPanel.PanelState.Closed && hud.LegendVisible && hud.TourVisible &&
@@ -708,6 +713,13 @@ namespace MusicHistory.EditorTools
             bool back = !d.IsTouring && panel.IsOpen;
             panel.PathsButton.onClick.Invoke();
             report.Check($"{L}: the Paths button toggles the list; a row click plays its path", opened && clicked && back && panel.State == FeaturedPathsPanel.PanelState.Closed);
+        }
+
+        /// <summary>The HUD brought up to date (edit mode has no LateUpdate); always true, for use inside a check.</summary>
+        static bool HudRefreshed(GraphHud hud)
+        {
+            hud.ForceUpdate();
+            return true;
         }
 
         static bool NoOverlap(IReadOnlyList<Rect> rects)
