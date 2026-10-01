@@ -232,11 +232,14 @@ namespace MusicHistory.Viewer
                         label.ScreenRect = left;
                     }
                     // Fitting on neither side (a big bubble near a narrow frame's centre), it slides
-                    // back inside the screen, over the bubble's edge if it must.
+                    // back inside the screen, over the bubble's edge if it must; a bubble that is off
+                    // screen keeps its label off screen too (it would read as another song's).
                     Rect r = label.ScreenRect;
+                    Vector3 asp = cam.WorldToScreenPoint(anchor);
+                    bool anchorOnScreen = asp.z > 0 && asp.x >= 0 && asp.x <= cam.pixelWidth;
                     float shift = r.xMax > cam.pixelWidth - EdgeMargin ? cam.pixelWidth - EdgeMargin - r.xMax
                         : r.xMin < EdgeMargin ? EdgeMargin - r.xMin : 0f;
-                    if (shift != 0f && r.width < cam.pixelWidth - 2 * EdgeMargin)
+                    if (shift != 0f && anchorOnScreen && r.width < cam.pixelWidth - 2 * EdgeMargin)
                     {
                         t.position += right * (shift * worldPerPixel);
                         label.ScreenRect = new Rect(r.x + shift, r.y, r.width, r.height);
