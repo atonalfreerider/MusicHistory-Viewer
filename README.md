@@ -51,6 +51,7 @@ next to `data/graph/` finds `data/songs/`.
 | Space · N / → · B / ← · Esc | Pause/resume · next step · previous step · leave the tour (the free camera comes back). |
 | C | Toggle "compare in C / 120 BPM": plays the normalized MIDI without the key/BPM glide. |
 | P · the "Featured paths" button (top centre) | Open the featured paths: curated walks through the graph played from recording previews (see below). |
+| M · the "Melody" button (while a path plays its mashup mix) | Show or hide the melody graph above the now-playing strip (see "Mashup mixes and the melody graph"). |
 
 Each walkthrough step does four things:
 
@@ -102,6 +103,58 @@ short fade; Pause and Stop fade. If no audio device advances `AudioSource.time` 
 disabled) or a file fails to load, a main-thread clock keeps time, so `Finished` still fires. A file
 still loading after `LoadTimeoutSeconds` (6 s) starts on that clock, and the recording joins at the
 clock's position when it arrives.
+
+## Mashup mixes and the melody graph
+
+When a featured path has a mashup mix in `data/audio/mashups/mashups.json` (version 1, written by
+the data pipeline next to one `<path id>/mix.mp3` per path; `-musicHistoryMashups <file>` or the
+loader's `MashupsFile` picks another), playing that path plays the mix instead of the per-step
+previews: one continuous file in which the root song plays its opening phrase, then each next
+song's separated vocal sings over the previous song's instrumental (a changeover, matched in key,
+tempo and chords, about 20 s in whole bars), the next song's full mix morphs into its own key and
+tempo over two bars, and so on; the last song ends the mix. A path without a mashup, a missing
+`mashups.json`, "compare" (C) and the director's `PreferMashups` switched off all play per step as
+before. The vocals are audio only: the file holds no words, and the viewer shows none.
+
+**Following the mix** (`Playback/MashupPlayer.cs`, `WalkthroughDirector`). The player decodes the
+MP3 with UnityWebRequest and plays it on an AudioSource of its own child object; seeks, Pause and
+Stop fade; without an audio device (batchmode) or while the file is still loading after
+`LoadTimeoutSeconds`, a main-thread clock keeps time. The segment playing (`segments`), the phrase
+beat (`beats`, interpolated, wrapping at the phrase end) and the songs whose vocal and instrumental
+are audible (`vocal_audible`, `instrumental_audible`) all come from `mashups.json`. The current step
+is the song whose instrumental plays; during a changeover the vocal's song glows as brightly and
+the edge between the two lights up and grows, and the camera frames both (above the melody
+graph). Next / → and Back / ← jump to where the next / previous song's vocal enters; a chip jumps to
+that song's entry; Enter restarts the current one.
+
+**The now-playing strip** names the segment: `Changeover  <vocal song> vocal over <instrumental
+song>  via <identity>`, `Morph  <song> glides into its own key and tempo` or `Full mix  <song>`, then
+the key and BPM heard, the chord match (`chord_match`), the vocal's transposition and tempo ratio
+and the beat alignment, as far as they fit. The instrumental's chip is lit (`BACKING` during a
+changeover), the vocal's chip is marked `VOCAL` in its melody colour, and the time bar covers the
+whole mix with the changeovers (white) and morphs (accent) marked above it.
+
+**The melody graph** (`Viewer/MelodyGraphPanel.cs`) sits directly above the strip, the same width:
+
+- x is the position in the shared phrase (`phrase_beats`), with bar lines; y the sung pitch in the
+  normalized C major / A minor frame, with note-name ticks (C bright).
+- Every song's melody (`songs[].melody`, pitch-tracked from its separated vocal stem) is drawn on top
+  of the others in its own muted colour; the legend lists title and year. A vocal window that wraps
+  past the phrase's end is drawn in two pieces.
+- The melodies whose vocal is audible now are bright and thicker, each with a **point of light**
+  riding on it at the playhead's beat and the melody's pitch there (dimmer while the voice breathes).
+- The chord colour strip along the bottom shows the instrumental's chords in the viewer's key palette
+  (circle-of-fifths hue, minor darker) with roman numerals, the current chord underlined; during a
+  changeover a thin strip above it shows the vocal's own chords, so the match is visible.
+- A playhead with a `bar n · <chord>` tag runs through the graph and the strips.
+
+The light points bloom through URP. uGUI is drawn after URP's post-processing, so they are not
+drawn on the panel itself: `Viewer/MelodyLightRig.cs` keeps one HDR quad per song
+(`MusicHistory/MelodyGlow`, far above the bloom threshold) on layer 31, far below the graph, seen
+only by a dedicated orthographic camera that frames the panel (one unit = one reference pixel) and
+renders with its own post-processing and its own bloom volume (on layer 31, so the graph's bloom
+and look are untouched) into a texture that a RawImage adds onto the panel. The graph's camera
+neither renders layer 31 nor sees its volume.
 
 ## Identity lineages (DESIGN §8b)
 
@@ -209,13 +262,17 @@ The viewer never reads or shows lyrics. Every string shown from the database is 
 | `Viewer/FeaturedPathsPanel.cs`, `RouteLine.cs`, `UiKit.cs` | The featured-paths button, list and now-playing strip (uGUI on the HUD canvas, EventSystem with InputSystemUIInputModule); the glowing route line; procedural rounded sprites and layout helpers. |
 | `Playback/PathCatalog.cs` | `paths.json` v2 reader (no Unity API): paths, steps, via, the glide maths, contract problems; binds work ids to songs. |
 | `Playback/PreviewSongPlayer.cs` | Recording-preview `ISongPlayer` for path tours: decode, crossfade, fades, main-thread fallback clock. |
+| `Playback/MashupCatalog.cs`, `MashupPlayer.cs` | `mashups.json` v1 reader (no Unity API): segments, beats, songs (melody, chords, audible spans), phrase-beat interpolation, segment lookup, binding to the paths and the graph; the mix player (decode, seek, fades, fallback clock). |
+| `Viewer/MelodyGraphPanel.cs`, `MelodyLightRig.cs`, `UiShapes.cs` | The melody graph (own Screen Space - Camera canvas); the bloomed light points (dedicated camera, bloom volume and texture); anti-aliased polylines and rectangles for uGUI. |
 | `Viewer/CameraControl.cs`, `SceneLook.cs` | Free-fly camera (`InputEnabled`, `SyncRotationFromTransform`, null-safe input); gradient sky and bloom. |
 | `Walkthrough/TourPlanner.cs`, `WalkthroughDirector.cs`, `CameraFraming.cs` | Tour sequences (including the family tour's family choice, order and per-song windows), the step state machine, and perspective-correct framing that keeps the HUD clear. |
 | `Playback/SilentSongPlayer.cs` | Timer-based `ISongPlayer`: the same morph tempo maths, raises `Finished`. |
 | `Playback/SongPlayerDiscovery.cs` | Chooses the player: an `ISongPlayer` component on the loader object; else `MusicHistory.Audio.SongPlayer`, added by reflection; else the silent player. The silent player also covers songs whose MIDI file is missing. |
 | `Assets/FDG/ForceDirectedGraph.cs` | Unity-FDG simulation with an axis lock, a Burst job, persistent buffers and a `Stepped` event. |
 | `Assets/Resources/SongBubble.shader`, `GlowingEdge.shader` | Unlit URP shaders with properties in the `UnityPerMaterial` CBUFFER (SRP Batcher compatible). |
+| `Assets/Resources/MelodyGlow.shader` | HDR sprite shader (intensity, configurable blend) for the melody graph's light points and their additive composite. |
 | `Assets/MusicHistory/Editor/Validation.cs`, `LineageValidation.cs`, `PlayModeBench.cs` | Headless checks (identity lineages in `LineageValidation.cs`), screenshots and the play-mode benchmark. |
+| `Assets/MusicHistory/Editor/PathsValidation.cs`, `MashupValidation.cs`, `PathsPlayMode.cs` | Featured paths and mashup mixes: edit-mode checks and screenshots, play-mode checks. |
 | `Assets/MusicHistory/Contracts/` | Shared with the audio module (foundation, do not edit). |
 
 ## Performance (measured)
@@ -323,6 +380,27 @@ Featured paths are checked by `Validation.Run` too (on `music_graph.db`), and on
 # Writes data/screens/paths_fullplay.json.
 "$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullPath -pathsPlayId orbison-to-flowers -logFile "$PWD/paths_full.log"
 ```
+
+Mashup mixes are checked by `Validation.Run` and `Validation.RunPaths` too, and on their own:
+
+```bash
+# Edit mode: the mashups.json contract (segments, beats, songs) and its binding to the paths and the
+# graph, phrase-beat interpolation, segment lookup, audible sets, melody pitch lookup; the chain
+# (root song first, changeovers in path order, last song last); a whole mix on the clock (steps,
+# both songs lit in a changeover, the edge, the strip); the melody graph's geometry (every sung
+# point inside the plot, the playing melodies bright, a light point at the playhead's beat and the
+# melody's pitch, the chord strip of the instrumental); the bloom (the same frame with and without
+# the light's bloom volume, and with the graph's bloom off); no overlap with the HUD at 1920x1080;
+# M, Next/Back, chips, Space, C, Esc, and the fallback to per-step previews. Catalogs: the real
+# mashups.json when present, -validationMashups <file>, and a synthetic one built from the paths.
+# Writes melody_graph.png (mid-changeover), melody_graph_nobloom.png and mashup_validation.json.
+"$UNITY" -batchmode -projectPath "$PWD/unity" -executeMethod MusicHistory.EditorTools.Validation.RunMashups -logFile "$PWD/mashups.log"
+```
+
+`PathsPlayMode.Run` also plays a mashup in play mode (-validationMashups <file>, else the real
+catalog): the mix decoded (44.1 kHz, length = mashups.json) and playing in real time, the melody
+graph on its camera canvas, Space, Next, M, the whole mix on the main-thread clock at time scale 8
+(every segment in order, finished once), and the same path per step without mashups.
 
 ## Lyric themes
 

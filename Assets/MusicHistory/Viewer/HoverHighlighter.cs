@@ -358,9 +358,10 @@ namespace MusicHistory.Viewer
         /// <summary>
         /// Path tour step: the playing song glows, the song heard before glows faintly, the rest of
         /// the route stays undimmed with its edges lit, everything else fades; every song of the
-        /// route keeps its label.
+        /// route keeps its label. With <paramref name="bothLit"/> (a mashup changeover: one song's
+        /// vocal over the other's instrumental) <paramref name="previous"/> glows as brightly too.
         /// </summary>
-        public void ShowPathStep(SongNode child, SongNode? previous, InfluenceEdge? stepEdge, GraphRoute route)
+        public void ShowPathStep(SongNode child, SongNode? previous, InfluenceEdge? stepEdge, GraphRoute route, bool bothLit = false)
         {
             Suspended = true;
             Loader.Labels.HideDimmed = true;
@@ -373,7 +374,7 @@ namespace MusicHistory.Viewer
             HashSet<SongNode> onRoute = new(route.Nodes);
             HashSet<InfluenceEdge> routeEdges = new(route.Edges);
             foreach (SongNode n in Loader.Nodes)
-                n.SetState(n == child ? BubbleState.Focus : n == previous ? BubbleState.Related
+                n.SetState(n == child ? BubbleState.Focus : n == previous ? (bothLit ? BubbleState.Focus : BubbleState.Related)
                     : onRoute.Contains(n) ? BubbleState.Normal : BubbleState.Dimmed);
             foreach (InfluenceEdge e in Loader.Edges)
             {

@@ -15,6 +15,9 @@ namespace MusicHistory.Viewer
         static Material? skyMaterial;
         static Volume? volume;
 
+        /// <summary>The runtime bloom volume (null before <see cref="Apply"/>); validation switches it off to compare.</summary>
+        public static Volume? BloomVolume => volume;
+
         public static void Apply(Camera? camera)
         {
             if (camera == null) return;

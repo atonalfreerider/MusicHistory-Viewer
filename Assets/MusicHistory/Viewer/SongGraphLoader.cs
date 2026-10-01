@@ -30,6 +30,11 @@ namespace MusicHistory.Viewer
     /// Featured paths (recording previews, <see cref="PathCatalog"/>): -musicHistoryPaths &lt;paths.json&gt;,
     /// else the inspector's PathsFile, else &lt;repo&gt;/data/audio/renders/paths.json. A missing file
     /// gives an empty list; the P panel says so.
+    ///
+    /// Mashup mixes (<see cref="MashupCatalog"/>): -musicHistoryMashups &lt;mashups.json&gt;, else the
+    /// inspector's MashupsFile, else &lt;repo&gt;/data/audio/mashups/mashups.json. A path with a mashup
+    /// plays it as one continuous mix with the melody graph (<see cref="MelodyGraphPanel"/>); a
+    /// missing file leaves every path on its per-step previews.
     /// </summary>
     [RequireComponent(typeof(ForceDirectedGraph))]
     public sealed class SongGraphLoader : MonoBehaviour
@@ -63,6 +68,8 @@ namespace MusicHistory.Viewer
         [Header("Featured paths")]
         [Tooltip("Blank: -musicHistoryPaths <paths.json>, else <repo>/data/audio/renders/paths.json.")]
         public string PathsFile = "";
+        [Tooltip("Blank: -musicHistoryMashups <mashups.json>, else <repo>/data/audio/mashups/mashups.json.")]
+        public string MashupsFile = "";
 
         [Header("Labels")]
         [Range(0, 300)] public int AlwaysLabelledSongs = 40;
@@ -90,6 +97,10 @@ namespace MusicHistory.Viewer
         public PathCatalog Catalog { get; private set; } = PathCatalog.Empty("not loaded");
         /// <summary>The featured-paths button, list and now-playing strip (P).</summary>
         public FeaturedPathsPanel? Paths { get; private set; }
+        /// <summary>The featured paths' mashup mixes, bound to this graph and the paths (empty when mashups.json is missing).</summary>
+        public MashupCatalog Mashups { get; private set; } = MashupCatalog.Empty("not loaded");
+        /// <summary>The melody graph shown while a mashup plays (M).</summary>
+        public MelodyGraphPanel? MelodyGraph { get; private set; }
         /// <summary>The glowing line through a previewed featured path.</summary>
         public RouteLine? RouteLine { get; private set; }
         public TimelineAxis Timeline { get; private set; } = null!;
@@ -236,6 +247,8 @@ namespace MusicHistory.Viewer
             Director.Initialize(this);
             string pathsFile = ResolvePathsPath(PathsFile, out string pathsReason);
             UseCatalog(PathCatalog.Load(pathsFile), pathsReason);
+            string mashupsFile = ResolveMashupsPath(MashupsFile, out string mashupsReason);
+            UseMashups(MashupCatalog.Load(mashupsFile), mashupsReason);
 
             if (cam != null) FrameOverview(cam);
             clock.Stop();
@@ -262,12 +275,44 @@ namespace MusicHistory.Viewer
                 Catalog.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null);
             }
             Director.UseCatalog(Catalog);
+            // The mashups follow the paths they play (the list shows which paths have one).
+            if (Mashups.Mashups.Count > 0) BindMashups();
             Paths = GetOrAdd<FeaturedPathsPanel>();
             Paths.Build(this);
             string where = Catalog.SourcePath.Length > 0 ? Catalog.SourcePath : "(in memory)";
             Debug.Log($"MusicHistory: featured paths {Catalog.Status}; {Catalog.PlayableCount} playable; {where}" +
                       (reason.Length > 0 ? $" [{reason}]" : "") +
                       (Catalog.Problems.Count > 0 ? $"; {Catalog.Problems.Count} problems, first: {string.Join(" | ", Catalog.Problems.Take(3))}" : ""));
+        }
+
+        /// <summary>
+        /// Binds <paramref name="catalog"/> (mashups.json) to this graph and the featured paths, hands it
+        /// to the walkthrough and (re)builds the melody graph.
+        /// </summary>
+        public void UseMashups(MashupCatalog catalog, string reason = "")
+        {
+            Mashups = catalog ?? MashupCatalog.Empty("none");
+            BindMashups();
+            MelodyGraph = GetOrAdd<MelodyGraphPanel>();
+            MelodyGraph.Build(this);
+            // The list marks the paths that play a mashup mix (and their length).
+            if (Paths != null) Paths.Build(this);
+            string where = Mashups.SourcePath.Length > 0 ? Mashups.SourcePath : "(in memory)";
+            Debug.Log($"MusicHistory: mashups {Mashups.Status}; {Mashups.PlayableCount} playable; {where}" +
+                      (reason.Length > 0 ? $" [{reason}]" : "") +
+                      (Mashups.Problems.Count > 0 ? $"; {Mashups.Problems.Count} problems, first: {string.Join(" | ", Mashups.Problems.Take(3))}" : ""));
+        }
+
+        void BindMashups()
+        {
+            if (Data != null)
+            {
+                Dictionary<string, int> byWork = new(StringComparer.Ordinal);
+                foreach (SongRecord s in Data.Songs)
+                    if (!string.IsNullOrEmpty(s.WorkId) && !byWork.ContainsKey(s.WorkId)) byWork[s.WorkId] = s.NodeId;
+                Mashups.Bind(w => byWork.TryGetValue(w, out int id) ? id : (int?)null, Catalog);
+            }
+            Director.UseMashups(Mashups);
         }
 
         /// <summary>The path's songs and the graph edges between consecutive songs (cached per catalog).</summary>
@@ -451,6 +496,7 @@ namespace MusicHistory.Viewer
             Timeline.Refresh(cam);
             Labels.ForceMeshUpdate();
             Hud.ForceUpdate();
+            if (MelodyGraph != null) MelodyGraph.ForceUpdate();
         }
 
         void Update()
@@ -503,6 +549,7 @@ namespace MusicHistory.Viewer
             if (graphRoot != null) Discard(graphRoot);
             graphRoot = null;
             if (Hud != null && Hud.Canvas != null) Discard(Hud.Canvas.gameObject);
+            if (MelodyGraph != null) MelodyGraph.Discard();
             nodes.Clear();
             edges.Clear();
             pinned.Clear();
@@ -557,6 +604,25 @@ namespace MusicHistory.Viewer
             }
             reason = "default";
             return Path.Combine(RepoRoot(), "data", "audio", "renders", PathCatalog.FileName);
+        }
+
+        /// <summary>mashups.json: -musicHistoryMashups, else <paramref name="configured"/>, else &lt;repo&gt;/data/audio/mashups/mashups.json.</summary>
+        public static string ResolveMashupsPath(string configured, out string reason)
+        {
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+            {
+                if (!string.Equals(args[i], MashupCatalog.CommandLineFlag, StringComparison.OrdinalIgnoreCase)) continue;
+                reason = "command line";
+                return ResolveUserPath(args[i + 1]);
+            }
+            if (!string.IsNullOrWhiteSpace(configured))
+            {
+                reason = "inspector";
+                return ResolveUserPath(configured);
+            }
+            reason = "default";
+            return Path.Combine(RepoRoot(), "data", "audio", "mashups", MashupCatalog.FileName);
         }
 
         public static string ResolveDatabasePath(string configured, out string reason)

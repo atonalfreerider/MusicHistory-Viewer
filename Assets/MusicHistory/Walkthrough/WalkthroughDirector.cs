@@ -34,6 +34,14 @@ namespace MusicHistory.Walkthrough
     /// prerendered recording preview (<see cref="PreviewSongPlayer"/>), which already starts in the
     /// previous step's key and tempo and glides to its own; a step whose render is missing, and
     /// "compare" (C), play the MIDI instead. Recording previews are used for nothing else.
+    ///
+    /// When the path has a mashup mix (data/audio/mashups/mashups.json, <see cref="MashupCatalog"/>),
+    /// the path tour plays that one continuous mix instead (<see cref="MashupPlayer"/>): the root
+    /// song's opening, then changeovers (the next song's vocal over the previous song's
+    /// instrumental) and morphs. The steps then follow the mix: the current step is the song whose
+    /// instrumental plays; during a changeover the vocal's song and the edge between the two light
+    /// up too, and the camera frames both. Next / Back / a chip jump to where a song's vocal
+    /// enters. "Compare" (C) still plays the MIDI.
     /// </summary>
     public sealed class WalkthroughDirector : MonoBehaviour
     {
@@ -51,12 +59,33 @@ namespace MusicHistory.Walkthrough
                  "seconds in which its beat did not move (unpaused). Longer than a MIDI parse plus the " +
                  "wait for the previous song's next bar line.")]
         [Min(1f)] public float WatchdogSeconds = 20f;
+        [Tooltip("Play a featured path's mashup mix (data/audio/mashups) when it has one, else the per-step previews.")]
+        public bool PreferMashups = true;
+        [Tooltip("Screen area (normalized) a mashup step is framed into while the melody graph shows below it.")]
+        public Rect MashupTourViewport = new(.16f, .5f, .68f, .245f);
 
         public SongGraphLoader Loader = null!;
         public ISongPlayer? Player { get; private set; }
         public SilentSongPlayer Silent { get; private set; } = null!;
         /// <summary>Plays prerendered recording previews (data/audio/renders) when one exists for the step.</summary>
         public PreviewSongPlayer? Preview { get; private set; }
+        /// <summary>Plays a featured path's mashup mix (data/audio/mashups) when it has one.</summary>
+        public MashupPlayer? MashupAudio { get; private set; }
+        /// <summary>The mashup mixes (data/audio/mashups/mashups.json), bound to the graph and the paths.</summary>
+        public MashupCatalog Mashups { get; private set; } = MashupCatalog.Empty("not loaded");
+        /// <summary>The current path's mashup (null when it has none), whether or not "compare" plays MIDI now.</summary>
+        public Mashup? PathMashup { get; private set; }
+        /// <summary>The mashup mix the path tour is playing (null: per-step previews or MIDI).</summary>
+        public Mashup? CurrentMashup => IsTouring && Mode == TourMode.Path && !ApplesToApples ? PathMashup : null;
+        /// <summary>Index of the mashup segment playing (-1 when no mashup plays).</summary>
+        public int SegmentIndex { get; private set; } = -1;
+        public MashupSegment? CurrentSegment => CurrentMashup is Mashup m && SegmentIndex >= 0 && SegmentIndex < m.Segments.Count ? m.Segments[SegmentIndex] : null;
+        /// <summary>Path step whose vocal sings over the current step's instrumental (changeovers; -1 otherwise).</summary>
+        public int VocalStepIndex { get; private set; } = -1;
+        /// <summary>Seconds into the mashup mix (0 when none plays).</summary>
+        public double MixSeconds => CurrentMashup != null && MashupAudio != null ? MashupAudio.CurrentSeconds : 0;
+        /// <summary>Raised when the mashup moves into another segment (or jumps).</summary>
+        public event Action? SegmentChanged;
         public string PlayerDescription { get; private set; } = "";
         public bool IsTouring { get; private set; }
         /// <summary>The last step's excerpt has ended.</summary>
@@ -112,6 +141,9 @@ namespace MusicHistory.Walkthrough
         const float HudInterval = 1f / 12f;
         // The mode to return to after a path tour (path tours are started from the panel).
         TourMode modeBeforePath = TourMode.Lineage;
+        // Mashup tours: the pair of songs framed (fly only when it changes) and the edges grown so far.
+        (int, int) framedPair = (-1, -1);
+        readonly HashSet<InfluenceEdge> grownEdges = new();
 
         public void Initialize(SongGraphLoader loader)
         {
@@ -127,6 +159,10 @@ namespace MusicHistory.Walkthrough
             Preview.Catalog = Catalog;
             Preview.Finished -= OnClipFinished;
             Preview.Finished += OnClipFinished;
+            MashupAudio = GetComponent<MashupPlayer>();
+            if (MashupAudio == null) MashupAudio = gameObject.AddComponent<MashupPlayer>();
+            MashupAudio.MixFinished -= OnMixFinished;
+            MashupAudio.MixFinished += OnMixFinished;
             if (Player != null && !ReferenceEquals(Player, Silent))
             {
                 Player.Finished -= OnClipFinished;
@@ -145,6 +181,16 @@ namespace MusicHistory.Walkthrough
             if (Preview != null) Preview.Catalog = Catalog;
             if (IsTouring && Mode == TourMode.Path) Exit();
         }
+
+        /// <summary>The mashup mixes path tours play when a path has one (the loader binds them first).</summary>
+        public void UseMashups(MashupCatalog catalog)
+        {
+            Mashups = catalog ?? MashupCatalog.Empty("none");
+            if (IsTouring && Mode == TourMode.Path) Exit();
+        }
+
+        /// <summary>The playable mashup of <paramref name="path"/> (null: it plays per-step previews).</summary>
+        public Mashup? MashupFor(FeaturedPath? path) => PreferMashups ? Mashups.For(path) : null;
 
         /// <summary>
         /// Replaces the discovered player (a custom synth, or a probe in validation). Songs whose
@@ -168,6 +214,7 @@ namespace MusicHistory.Walkthrough
         {
             if (Silent != null) Silent.Finished -= OnClipFinished;
             if (Preview != null) Preview.Finished -= OnClipFinished;
+            if (MashupAudio != null) MashupAudio.MixFinished -= OnMixFinished;
             if (Player != null) Player.Finished -= OnClipFinished;
         }
 
@@ -266,6 +313,7 @@ namespace MusicHistory.Walkthrough
             if (Mode != TourMode.Path) modeBeforePath = Mode;
             CurrentPath = path;
             CurrentRoute = Loader.RouteFor(path);
+            PathMashup = MashupFor(path);
             return Begin(TourMode.Path, planned, null);
         }
 
@@ -276,7 +324,12 @@ namespace MusicHistory.Walkthrough
             {
                 CurrentPath = null;
                 CurrentRoute = null;
+                PathMashup = null;
             }
+            SegmentIndex = -1;
+            VocalStepIndex = -1;
+            framedPair = (-1, -1);
+            grownEdges.Clear();
             Mode = mode;
             FamilyId = familyId;
             steps = planned;
@@ -293,6 +346,14 @@ namespace MusicHistory.Walkthrough
         public void GoTo(int index)
         {
             if (!IsTouring || steps.Count == 0) return;
+            if (CurrentMashup != null)
+            {
+                GoToMashup(index);
+                return;
+            }
+            SegmentIndex = -1;
+            VocalStepIndex = -1;
+            framedPair = (-1, -1);
             // What the listener heard just before this step: the clip being left, whichever way
             // the tour moves (null only at the tour start).
             SongClip? heard = CurrentClip;
@@ -334,16 +395,7 @@ namespace MusicHistory.Walkthrough
             edgeT = 0f;
             if (animatedEdge != null) animatedEdge.VisibleFraction = 0f;
 
-            Camera? cam = Loader.ViewCamera;
-            if (cam != null)
-            {
-                List<(Vector3, float)> items = new() { (child.transform.position, child.Radius * 1.4f) };
-                if (parent != null) items.Add((parent.transform.position, parent.Radius * 1.4f));
-                (flyToPosition, flyToRotation) = CameraFraming.Frame(cam, items, Loader.Frame.ViewForward, FramingMargin, MinFramingDistance, TourViewport);
-                flyFromPosition = cam.transform.position;
-                flyFromRotation = cam.transform.rotation;
-                flyT = 0f;
-            }
+            FlyTo(child, parent);
 
             CurrentClip = Mode == TourMode.Family && FamilyId is int fam && Loader.Data != null
                 ? TourPlanner.FamilyClip(Loader.Data, fam, child.NodeId)
@@ -388,10 +440,143 @@ namespace MusicHistory.Walkthrough
             UpdateTourHud();
         }
 
+        /// <summary>Screen area the current step is framed into (above the melody graph while a mashup shows it).</summary>
+        public Rect FramingViewport =>
+            CurrentMashup != null && Loader != null && Loader.MelodyGraph != null && Loader.MelodyGraph.UserVisible ? MashupTourViewport : TourViewport;
+
+        /// <summary>Flies the camera to frame <paramref name="child"/> with <paramref name="partner"/>.</summary>
+        void FlyTo(SongNode child, SongNode? partner)
+        {
+            Camera? cam = Loader.ViewCamera;
+            if (cam == null) return;
+            List<(Vector3, float)> items = new() { (child.transform.position, child.Radius * 1.4f) };
+            if (partner != null) items.Add((partner.transform.position, partner.Radius * 1.4f));
+            (flyToPosition, flyToRotation) = CameraFraming.Frame(cam, items, Loader.Frame.ViewForward, FramingMargin, MinFramingDistance, FramingViewport);
+            flyFromPosition = cam.transform.position;
+            flyFromRotation = cam.transform.rotation;
+            flyT = 0f;
+        }
+
+        /// <summary>The camera frames the current songs again (the melody graph was shown or hidden).</summary>
+        public void Reframe()
+        {
+            if (!IsTouring || CurrentClip == null) return;
+            FlyTo(Loader.NodeById(CurrentClip.NodeId), StepPartner);
+        }
+
+        // ------------------------------------------------------------------ mashup tours
+
+        /// <summary>Mashup tour: plays the mix from where step <paramref name="index"/>'s song enters (its vocal's changeover).</summary>
+        void GoToMashup(int index)
+        {
+            Mashup m = CurrentMashup!;
+            MashupPlayer player = MashupAudio!;
+            int step = Mathf.Clamp(index, 0, steps.Count - 1);
+            advancePending = false;
+            TourComplete = false;
+            double at = m.StepStartSeconds(step);
+            if (ActivePlayer != null && !ReferenceEquals(ActivePlayer, player)) ActivePlayer.Stop();
+            ActivePlayer = player;
+            ResetWatchdog();
+            player.MorphBars = MorphBars;
+            player.PlayMix(m, at, Loader.NodeById(steps[step]).Song.ToClip());
+            SyncMashup(player.CurrentSeconds, force: true);
+            UpdateTourHud();
+        }
+
+        /// <summary>Follows the mix: a new segment changes the current step, the highlight, the edge and the framing.</summary>
+        void SyncMashup(double t, bool force = false)
+        {
+            Mashup? m = CurrentMashup;
+            if (m == null || CurrentRoute == null) return;
+            int si = m.SegmentIndexAt(t);
+            if (si < 0 || (si == SegmentIndex && !force)) return;
+            SegmentIndex = si;
+            MashupSegment g = m.Segments[si];
+            int inst = Mathf.Clamp(m.InstrumentalStep(g), 0, steps.Count - 1);
+            int voc = m.VocalStep(g);
+            VocalStepIndex = voc >= 0 && voc != inst && voc < steps.Count ? voc : -1;
+            StepIndex = inst;
+            SongNode child = Loader.NodeById(steps[inst]);
+            SongNode? partner = null;
+            InfluenceEdge? edge = null;
+            bool both = false;
+            if (g.Kind == MashupSegmentKind.Changeover && VocalStepIndex >= 0)
+            {
+                partner = Loader.NodeById(steps[VocalStepIndex]);
+                edge = EdgeBetweenSteps(inst, VocalStepIndex);
+                both = true;
+            }
+            else if (inst > 0)
+            {
+                partner = Loader.NodeById(steps[inst - 1]);
+                edge = EdgeBetweenSteps(inst - 1, inst);
+            }
+            if (CurrentClip == null || CurrentClip.NodeId != child.NodeId) CurrentClip = child.Song.ToClip();
+            PreviousClip = inst > 0 ? Loader.NodeById(steps[inst - 1]).Song.ToClip() : null;
+            CurrentWindow = null;
+            StepEdge = edge;
+            StepPartner = partner;
+            Loader.Highlighter.ShowPathStep(child, partner, edge, CurrentRoute, both);
+            Loader.Hud.ShowSong(child);
+            // Each edge grows once per tour, the first time its two songs meet.
+            if (edge != null && grownEdges.Add(edge))
+            {
+                if (animatedEdge != null && animatedEdge != edge) animatedEdge.VisibleFraction = 1f;
+                animatedEdge = edge;
+                edgeT = 0f;
+                edge.VisibleFraction = 0f;
+            }
+            int a = child.NodeId, b = partner != null ? partner.NodeId : 0;
+            (int, int) pair = (Math.Min(a, b), Math.Max(a, b));
+            if (pair != framedPair)
+            {
+                framedPair = pair;
+                FlyTo(child, partner);
+            }
+            SegmentChanged?.Invoke();
+        }
+
+        InfluenceEdge? EdgeBetweenSteps(int i, int j)
+        {
+            if (CurrentRoute == null) return null;
+            int later = Math.Max(i, j);
+            if (Math.Abs(i - j) == 1 && later < CurrentRoute.StepEdges.Count) return CurrentRoute.StepEdges[later];
+            return GraphRoute.Between(Loader.NodeById(steps[i]), Loader.NodeById(steps[j]));
+        }
+
+        void OnMixFinished(Mashup m)
+        {
+            if (!IsTouring || !ReferenceEquals(CurrentMashup, m)) return;
+            TourComplete = true;
+            UpdateTourHud();
+        }
+
+        /// <summary>Mashup tours: the last step whose song has entered the mix (Next / Back count from it).</summary>
+        public int MashupStepReached => CurrentMashup is Mashup m && MashupAudio != null ? m.StepReachedAt(MashupAudio.CurrentSeconds, steps.Count) : StepIndex;
+
+        /// <summary>The mashup segment as words: "Changeover: X vocal over Y" (no markup).</summary>
+        public static string SegmentDescription(Mashup m, MashupSegment g)
+        {
+            string inst = g.InstrumentalSong >= 0 ? m.Songs[g.InstrumentalSong].Title : g.Instrumental;
+            string voc = g.VocalSong >= 0 ? m.Songs[g.VocalSong].Title : g.Vocal;
+            return g.Kind switch
+            {
+                MashupSegmentKind.Changeover => $"Changeover: {voc} vocal over {inst}",
+                MashupSegmentKind.Morph => $"Morph: {inst} glides into its own key and tempo",
+                _ => $"Full mix: {inst}"
+            };
+        }
+
         /// <summary>Re-applies the current step's highlighting (after V toggles the secondary edges).</summary>
         public void RefreshStepHighlight()
         {
             if (!IsTouring || CurrentClip == null) return;
+            if (CurrentMashup != null)
+            {
+                SyncMashup(MixSeconds, force: true);
+                return;
+            }
             SongNode child = Loader.NodeById(CurrentClip.NodeId);
             if (Mode == TourMode.Path && CurrentRoute != null) Loader.Highlighter.ShowPathStep(child, StepPartner, StepEdge, CurrentRoute);
             else if (Mode == TourMode.Family && FamilyId is int family) Loader.Highlighter.ShowTourStep(child, StepPartner, StepEdge, family);
@@ -423,12 +608,24 @@ namespace MusicHistory.Walkthrough
         public void Next()
         {
             if (!IsTouring) return;
+            if (CurrentMashup != null)
+            {
+                // To where the next song's vocal enters.
+                int reached = MashupStepReached;
+                if (reached + 1 < steps.Count) GoTo(reached + 1);
+                return;
+            }
             if (StepIndex + 1 < steps.Count) GoTo(StepIndex + 1);
         }
 
         public void Previous()
         {
             if (!IsTouring) return;
+            if (CurrentMashup != null)
+            {
+                GoTo(Mathf.Max(0, MashupStepReached - 1));
+                return;
+            }
             GoTo(Mathf.Max(0, StepIndex - 1));
         }
 
@@ -456,6 +653,11 @@ namespace MusicHistory.Walkthrough
             CurrentWindow = null;
             CurrentPath = null;
             CurrentRoute = null;
+            PathMashup = null;
+            SegmentIndex = -1;
+            VocalStepIndex = -1;
+            framedPair = (-1, -1);
+            grownEdges.Clear();
             if (Mode == TourMode.Path) Mode = modeBeforePath;
             Loader.Highlighter.EndTour();
             if (Loader.Highlighter.FocusEdge != null) Loader.Hud.ShowEdge(Loader.Highlighter.FocusEdge);
@@ -493,9 +695,18 @@ namespace MusicHistory.Walkthrough
             if (advancePending)
             {
                 advancePending = false;
-                if (StepIndex + 1 < steps.Count) GoTo(StepIndex + 1);
+                if (CurrentMashup != null)
+                {
+                    // Only the watchdog gets here on a mashup: move on to the next song's entry.
+                    int reached = MashupStepReached;
+                    if (reached + 1 < steps.Count) GoTo(reached + 1);
+                    else TourComplete = true;
+                }
+                else if (StepIndex + 1 < steps.Count) GoTo(StepIndex + 1);
                 else TourComplete = true;
             }
+            // A mashup's segments drive the steps (the mix plays on by itself).
+            if (CurrentMashup != null && MashupAudio != null) SyncMashup(MashupAudio.CurrentSeconds);
 
             ISongPlayer? active = ActivePlayer;
             if (active != null && !active.Paused && !TourComplete && !advancePending)
@@ -741,6 +952,7 @@ namespace MusicHistory.Walkthrough
                 ISongPlayer? p = ActivePlayer;
                 if (p == null) return "";
                 if (ReferenceEquals(p, Preview)) return "recording preview";
+                if (ReferenceEquals(p, MashupAudio)) return "mashup mix";
                 if (ReferenceEquals(p, Silent))
                     return Player != null && !ReferenceEquals(Player, Silent) ? "silent (MIDI file missing)" : "silent (no synth)";
                 return ApplesToApples ? "synth (compare in C / 120 BPM)" : "synth";
@@ -753,6 +965,12 @@ namespace MusicHistory.Walkthrough
             SongClip? clip = CurrentClip;
             ISongPlayer? p = ActivePlayer;
             if (clip == null || p == null) return default;
+            if (CurrentMashup != null && ReferenceEquals(p, MashupAudio) && CurrentSegment is MashupSegment g)
+            {
+                double t = MashupAudio!.CurrentSeconds;
+                return new StepReadout(true, ActivePlayerName, g.Key, g.Key, g.Key, 0, 0, g.BpmStart, g.Bpm, g.BpmAt(t), g.Glide(t),
+                    t, MashupAudio.DurationSeconds, true, "audio", "audio");
+            }
             if (p is PreviewSongPlayer preview && preview.CurrentStep is PathStep s)
             {
                 double semis = preview.CurrentSemitones;
@@ -801,6 +1019,19 @@ namespace MusicHistory.Walkthrough
             string position = r.InSeconds
                 ? $"{PathCatalog.Clock(r.Position)} / {PathCatalog.Clock(r.Length)}"
                 : $"beat {Fmt(r.Position, "0.0")}/{Fmt(r.Length, "0")}";
+            if (CurrentMashup is Mashup m && CurrentSegment is MashupSegment g)
+            {
+                string match = g.ChordMatch is double cm ? $" · chords match {MashupCatalog.Percent(cm)}" : "";
+                string glide = g.Kind == MashupSegmentKind.Morph && Math.Abs(g.BpmStart - g.Bpm) > .05
+                    ? $"BPM {Fmt(g.BpmStart, "0.#")} → {Fmt(g.Bpm, "0.#")} (now {Fmt(r.NowBpm, "0.0")})"
+                    : $"BPM {Fmt(g.Bpm, "0.#")}";
+                HudText = $"PATH · {path.Title} · step {StepIndex + 1}/{steps.Count} · {state} · {r.Player}\n" +
+                          $"{SegmentDescription(m, g)} · segment {SegmentIndex + 1}/{m.Segments.Count} ({MashupSegment.KindName(g.Kind)})\n" +
+                          $"Key {g.Key} · {glide}{match} · {position}";
+                Loader.Hud.ShowTour("", 0f, Color.clear);
+                if (Loader.Paths != null) Loader.Paths.RefreshNowPlaying();
+                return;
+            }
             HudText = $"PATH · {path.Title} · step {StepIndex + 1}/{steps.Count} · {state} · {r.Player}\n" +
                       $"{from}{child.Song.Title} ({child.Song.Year}) · {child.Song.Artist}{via}\n" +
                       $"Key {r.StartKey} → {r.Key} (now {r.NowKey}, {Fmt(r.NowSemitones, "+0.0;-0.0;0.0")} st)" +

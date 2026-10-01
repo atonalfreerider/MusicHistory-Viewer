@@ -79,6 +79,37 @@ namespace MusicHistory.Viewer
             return circle;
         }
 
+        static Sprite? softDot;
+
+        /// <summary>A white disc whose alpha falls off smoothly from the centre (a glow halo).</summary>
+        public static Sprite SoftDot()
+        {
+            if (softDot != null) return softDot;
+            const int size = 64;
+            Texture2D tex = new(size, size, TextureFormat.RGBA32, false)
+            {
+                name = "UiKit Soft Dot",
+                hideFlags = HideFlags.DontSave,
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+            Color32[] px = new Color32[size * size];
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    float dx = (x + .5f) / size * 2f - 1f, dy = (y + .5f) / size * 2f - 1f;
+                    float r = Mathf.Sqrt(dx * dx + dy * dy);
+                    float a = r >= 1f ? 0f : Mathf.Exp(-r * r * 4.5f) * (1f - r * r);
+                    px[y * size + x] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(Mathf.Clamp01(a) * 255f));
+                }
+            tex.SetPixels32(px);
+            tex.Apply(false, false);
+            softDot = Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(.5f, .5f), 100f, 0, SpriteMeshType.FullRect);
+            softDot.name = tex.name;
+            softDot.hideFlags = HideFlags.DontSave;
+            return softDot;
+        }
+
         public static RectTransform Rect(string name, Transform parent)
         {
             GameObject go = new(name, typeof(RectTransform));

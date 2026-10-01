@@ -29,7 +29,8 @@ namespace MusicHistory.EditorTools
     /// data/audio/renders/paths.json when it exists. With neither, a small catalog built from the
     /// graph's own lineages (renders missing, so MIDI plays) still exercises the panel and the tour.
     /// Writes paths_button.png, paths_panel_idle.png, paths_panel.png (a hovered row) and
-    /// paths_playing.png (+ _&lt;label&gt; per catalog).
+    /// paths_playing.png (+ _&lt;label&gt; per catalog). Then the mashup mixes and the melody graph
+    /// (<see cref="ValidateMashups"/>, MashupValidation.cs).
     /// </summary>
     public static partial class Validation
     {
@@ -133,6 +134,8 @@ namespace MusicHistory.EditorTools
                 ValidateCatalog(report, loader, cam, catalog, label, outDir, width, height, canonicalShots: i == 0);
             }
             ValidateNonPathToursUseMidi(report, loader, catalogs[0].catalog);
+            loader.Director.Exit();
+            ValidateMashups(report, loader, cam, outDir, width, height);
             loader.Director.Exit();
         }
 
@@ -251,6 +254,9 @@ namespace MusicHistory.EditorTools
             // A fresh graph per catalog: every check starts from the overview.
             loader.Build(loader.ResolvedDbPath);
             loader.UseCatalog(catalog, "validation");
+            // These checks are about the per-step previews: no mashup mix takes the paths over here
+            // (MashupValidation checks the mixes).
+            loader.UseMashups(MashupCatalog.Empty("validation: per-step previews"), "validation");
             SongGraphData data = loader.Data!;
             WalkthroughDirector director = loader.Director;
             report.Text($"paths_{label}_file", catalog.SourcePath);

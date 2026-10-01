@@ -175,7 +175,7 @@ namespace MusicHistory.Viewer
                       : $"\n<color={Muted}>Mouse</color>  hover shows influences · click selects · right-drag looks · wheel dollies") +
                   $"\n<color={Muted}>Move</color>  W A S D, Q E (Shift = fast) · R reset view · L all labels · V secondary edges · F live layout (time locked) · T lyric themes" +
                   $"\n<color={Muted}>Walkthrough</color>  1 lineage · 2 subtree · 3 chronological{(lineage ? " · 4 family" : "")} · M next mode · Enter start · Space pause · N/→ next · B/← back · Esc exit · C compare in C / 120 BPM" +
-                  $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back"
+                  $"\n<color={Muted}>Featured paths</color>  P opens the list (recording previews) · ↑↓ or 1–9 choose · Enter or click plays · Esc back · M melody graph (mashup mixes)"
                 : $"\n<color={Muted}>H</color> controls · <color={Muted}>P</color> featured paths";
             SetText(legend, legendHidden ? "" : legendBody + help);
         }

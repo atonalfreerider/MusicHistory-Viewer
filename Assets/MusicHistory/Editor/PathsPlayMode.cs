@@ -42,6 +42,8 @@ namespace MusicHistory.EditorTools
     ///
     /// <see cref="RunFullPath"/> instead plays one whole featured path in real time on the audio
     /// clock (listener muted) and reports each step's timings in data/screens/paths_fullplay.json.
+    /// <see cref="RunFullMashup"/> plays one whole mashup mix in real time the same way and reports
+    /// each segment's timings in data/screens/mashup_fullplay.json.
     /// </summary>
     [InitializeOnLoad]
     public static class PathsPlayMode
@@ -91,6 +93,28 @@ namespace MusicHistory.EditorTools
         const string FullPathKey = "MusicHistory.PathsPlayMode.FullPath";
         static string FullPathId => SessionState.GetString(FullPathKey, "");
 
+        /// <summary>
+        /// Plays one whole mashup mix in real time on the audio device:
+        /// <c>-executeMethod MusicHistory.EditorTools.PathsPlayMode.RunFullMashup [-mashupPlayId &lt;path id&gt;] [-validationMashups &lt;file&gt;]</c>
+        /// (default: the playable mix with the most songs; catalog: -validationMashups, else the real
+        /// mashups.json). The listener is muted. Logs and writes per-segment timings to
+        /// data/screens/mashup_fullplay.json: when the director entered each segment on the audio
+        /// clock against the planned start, the wall clock, the step and vocal step, the melody
+        /// graph's bright lines and light points mid-segment, the audio/wall rate and when the mix finished.
+        /// </summary>
+        public static void RunFullMashup()
+        {
+            string id = "*";
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (string.Equals(args[i], "-mashupPlayId", StringComparison.OrdinalIgnoreCase)) id = args[i + 1];
+            SessionState.SetString(FullMashupKey, id);
+            Run();
+        }
+
+        const string FullMashupKey = "MusicHistory.PathsPlayMode.FullMashup";
+        static string FullMashupId => SessionState.GetString(FullMashupKey, "");
+
         static void Hook()
         {
             EditorApplication.update -= Tick;
@@ -120,6 +144,7 @@ namespace MusicHistory.EditorTools
                 if (EditorApplication.isPlaying) return;
                 SessionState.SetBool(ActiveKey, false);
                 SessionState.EraseString(FullPathKey);
+                SessionState.EraseString(FullMashupKey);
                 EditorApplication.update -= Tick;
                 Application.logMessageReceivedThreaded -= OnLog;
                 EditorApplication.Exit(exitCode);
@@ -196,6 +221,12 @@ namespace MusicHistory.EditorTools
             SongGraphLoader? loader = null;
             yield return WaitForGraph(l => loader = l);
             if (!Check("scene built itself in play mode", loader != null)) yield break;
+            // One frame rendered before counting errors: batchmode renders nothing by itself, so the
+            // first camera to render (the melody graph's light camera, later) would otherwise create
+            // the render pipeline mid-check, and this editor logs its package-resource reload then.
+            Camera? first = loader!.ViewCamera;
+            if (first != null) first.Render();
+            yield return Frames(2);
             int before = ErrorCount();
             if (FullPathId.Length > 0)
             {
@@ -203,8 +234,17 @@ namespace MusicHistory.EditorTools
                 Check("full path: no exception or error logged", ErrorCount() == before, Errors(before));
                 yield break;
             }
+            if (FullMashupId.Length > 0)
+            {
+                yield return FullMashup(loader!, FullMashupId);
+                Check("full mashup: no exception or error logged", ErrorCount() == before, Errors(before));
+                yield break;
+            }
             yield return Paths(loader!);
             Check("featured paths in play mode: no exception or error logged", ErrorCount() == before, Errors(before));
+            before = ErrorCount();
+            yield return Mashups(loader!);
+            Check("mashups in play mode: no exception or error logged", ErrorCount() == before, Errors(before));
             yield return Teardown();
         }
 
@@ -217,6 +257,8 @@ namespace MusicHistory.EditorTools
             PreviewSongPlayer preview = d.Preview!;
             PathCatalog catalog = loader.Catalog;
             preview.Volume = 0f;   // silent validation: the clocks run all the same
+            // These checks are about the per-step previews (Mashups below checks the mixes).
+            loader.UseMashups(MashupCatalog.Empty("play mode: per-step previews"), "play mode");
             Check("play mode: EventSystem with InputSystemUIInputModule, GraphicRaycaster on the HUD canvas, no UI navigation",
                 EventSystem.current != null && EventSystem.current == panel.Events && EventSystem.current.currentInputModule is InputSystemUIInputModule &&
                 !EventSystem.current.sendNavigationEvents && loader.Hud.Canvas.GetComponent<UnityEngine.UI.GraphicRaycaster>() != null,
@@ -357,6 +399,132 @@ namespace MusicHistory.EditorTools
             yield return Frames(2);
             Check("play mode: Esc, Esc: back to the list, then closed", !d.IsTouring && panel.State == FeaturedPathsPanel.PanelState.Closed &&
                 loader.Hud.LegendVisible);
+        }
+
+        // ------------------------------------------------------------------ mashups
+
+        /// <summary>
+        /// A path with a mashup mix: the mix decoded by UnityWebRequest and playing in real time,
+        /// the melody graph on a camera canvas, pause, Next, M, the whole mix on the main-thread
+        /// clock at time scale 8 (segments in order, finished once), and the fallback to per-step
+        /// previews without mashups. Catalog: -validationMashups, else the real mashups.json.
+        /// </summary>
+        static IEnumerator Mashups(SongGraphLoader loader)
+        {
+            FeaturedPathsPanel panel = loader.Paths!;
+            WalkthroughDirector d = loader.Director;
+            MashupPlayer player = d.MashupAudio!;
+            string? arg = null;
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (string.Equals(args[i], "-validationMashups", StringComparison.OrdinalIgnoreCase)) arg = SongGraphLoader.ResolveUserPath(args[i + 1]);
+            string real = Path.Combine(SongGraphLoader.RepoRoot(), "data", "audio", "mashups", MashupCatalog.FileName);
+            MashupCatalog catalog = arg != null && File.Exists(arg) ? MashupCatalog.Load(arg)
+                : File.Exists(real) ? MashupCatalog.Load(real) : MashupCatalog.Empty("no mashups.json");
+            loader.UseMashups(catalog, "play mode");
+            Mashup? m = catalog.Mashups.Where(x => x.IsPlayable).OrderByDescending(x => x.FileExists).ThenByDescending(x => x.Songs.Count).FirstOrDefault();
+            if (m == null)
+            {
+                Check("play mode: mashups skipped (no playable mashups.json; pass -validationMashups)", true, catalog.Status);
+                yield break;
+            }
+            FeaturedPath path = m.Path!;
+            float volume = player.Volume;
+            player.Volume = 0f;   // silent validation
+            List<int> segments = new();
+            int finished = 0;
+            void OnSegment()
+            {
+                if (segments.Count == 0 || segments[^1] != d.SegmentIndex) segments.Add(d.SegmentIndex);
+            }
+            void OnFinished(Mashup x) => finished++;
+            try
+            {
+                panel.HandleKey(Key.P);
+                yield return Frames(2);
+                panel.Select(panel.Paths.ToList().IndexOf(path));
+                panel.HandleKey(Key.Enter);
+                yield return Frames(3);
+                MelodyGraphPanel graph = loader.MelodyGraph!;
+                Check("play mode: a path with a mashup plays the mix; the melody graph shows on a Screen Space - Camera canvas (bloom reaches it)",
+                    d.CurrentMashup == m && ReferenceEquals(d.ActivePlayer, player) && graph.Showing && graph.Canvas != null &&
+                    graph.Canvas.renderMode == RenderMode.ScreenSpaceCamera && graph.Canvas.worldCamera == loader.ViewCamera,
+                    $"{m.Id}: {d.ActivePlayerName}; canvas {graph.Canvas?.renderMode}");
+                if (m.FileExists)
+                {
+                    yield return Seconds(20, () => player.CurrentAudio != null);
+                    AudioClip? audio = player.CurrentAudio;
+                    Check("play mode: the mix decodes to 44.1 kHz audio as long as mashups.json says (±0.15 s)",
+                        audio != null && audio.frequency == 44100 && Math.Abs(audio.length - m.Seconds) < .15,
+                        audio != null ? $"{audio.frequency} Hz, {audio.channels} ch, {audio.length:0.000} s vs {m.Seconds:0.000} s" : $"{player.ClockSource}; {player.LastWarning}");
+                    double t0 = player.CurrentSeconds;
+                    yield return Seconds(1.5);
+                    double played = player.CurrentSeconds - t0;
+                    Check("play mode: the mix plays and its clock advances in real time", played > 1.0 && played < 2.5,
+                        $"{played:0.00} s in 1.5 s on the {player.ClockSource} clock");
+                    Debug.Log($"[paths-play] mashup clock source with this audio device: {player.ClockSource}");
+                }
+                panel.HandleKey(Key.Space);
+                yield return Seconds(.4);
+                double pausedAt = player.CurrentSeconds;
+                float pausedGain = player.CurrentGain;
+                yield return Seconds(.4);
+                bool frozen = Math.Abs(player.CurrentSeconds - pausedAt) < 1e-6;
+                panel.HandleKey(Key.Space);
+                yield return Seconds(.4);
+                Check("play mode: Space fades the mix out and pauses it (clock frozen), then fades back in",
+                    pausedGain < .01f && frozen && player.CurrentGain > .99f && !player.Paused, $"gain paused {pausedGain:0.00}, resumed {player.CurrentGain:0.00}");
+                panel.HandleKey(Key.RightArrow);
+                yield return Seconds(.4);
+                Check("play mode: Next jumps (fade out, seek, fade in) to where the next song's vocal enters",
+                    Math.Abs(player.CurrentSeconds - m.StepStartSeconds(1)) < .6 && d.VocalStepIndex == 1 && d.CurrentSegment?.Kind == MashupSegmentKind.Changeover,
+                    $"{player.CurrentSeconds:0.00} s vs {m.StepStartSeconds(1):0.00} s; gain {player.CurrentGain:0.00}");
+                panel.HandleKey(Key.M);
+                yield return Frames(2);
+                bool hidden = !graph.Showing;
+                panel.HandleKey(Key.M);
+                yield return Frames(2);
+                Check("play mode: M hides and shows the melody graph", hidden && graph.Showing);
+
+                // The whole mix on the main-thread clock, fast.
+                panel.HandleKey(Key.Escape);
+                yield return Frames(2);
+                d.SegmentChanged += OnSegment;
+                player.MixFinished += OnFinished;
+                player.ForceMainClock = true;
+                const float speed = 8f;
+                Time.timeScale = speed;
+                panel.Select(panel.Paths.ToList().IndexOf(path));
+                panel.HandleKey(Key.Enter);
+                yield return Seconds(m.Duration / speed + 15, () => d.TourComplete);
+                yield return Seconds(.5);
+                Check("play mode: on the main-thread clock the whole mix plays every segment in order and finishes once",
+                    d.TourComplete && segments.SequenceEqual(Enumerable.Range(0, m.Segments.Count)) && finished == 1 && player.UsingMainClock,
+                    $"segments {string.Join(",", segments)} of {m.Segments.Count}; finished {finished}; {player.ClockSource}");
+            }
+            finally
+            {
+                d.SegmentChanged -= OnSegment;
+                player.MixFinished -= OnFinished;
+                player.ForceMainClock = false;
+                Time.timeScale = 1f;
+                player.Volume = volume;
+            }
+            panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+            // Without mashups the same path plays its per-step previews.
+            loader.UseMashups(MashupCatalog.Empty("play mode: fallback"), "play mode");
+            if (!panel.IsOpen) panel.HandleKey(Key.P);   // the panel was rebuilt (closed)
+            panel.Select(panel.Paths.ToList().IndexOf(path));
+            panel.HandleKey(Key.Enter);
+            yield return Frames(3);
+            Check("play mode: without a mashup the same path plays per step (previews or MIDI), no melody graph",
+                d.IsTouring && d.CurrentMashup == null && !ReferenceEquals(d.ActivePlayer, player) && loader.MelodyGraph != null && !loader.MelodyGraph.Showing,
+                d.ActivePlayerName);
+            panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+            if (panel.IsOpen) panel.HandleKey(Key.Escape);
+            yield return Frames(2);
         }
 
         // ------------------------------------------------------------------ one whole path, real time
@@ -555,6 +723,199 @@ namespace MusicHistory.EditorTools
             yield return Frames(2);
         }
 
+        // ------------------------------------------------------------------ one whole mashup mix, real time
+
+        sealed class SegmentTiming
+        {
+            public int Index;
+            public double EnteredWall = -1, EnteredAudio = -1;
+            public string Clock = "";
+            public int Step = -1, VocalStep = -1;
+            public int MidLines = -1, MidDots = -1, MidVoicedDots = -1;
+            public bool MidSampled;
+            public string MidChord = "";
+        }
+
+        static IEnumerator FullMashup(SongGraphLoader loader, string id)
+        {
+            FeaturedPathsPanel panel = loader.Paths!;
+            WalkthroughDirector d = loader.Director;
+            MashupPlayer player = d.MashupAudio!;
+            string? arg = null;
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i + 1 < args.Length; i++)
+                if (string.Equals(args[i], "-validationMashups", StringComparison.OrdinalIgnoreCase)) arg = SongGraphLoader.ResolveUserPath(args[i + 1]);
+            string real = Path.Combine(SongGraphLoader.RepoRoot(), "data", "audio", "mashups", MashupCatalog.FileName);
+            MashupCatalog catalog = arg != null && File.Exists(arg) ? MashupCatalog.Load(arg)
+                : File.Exists(real) ? MashupCatalog.Load(real) : MashupCatalog.Empty("no mashups.json");
+            loader.UseMashups(catalog, "full mashup");
+            Mashup? found = id == "*"
+                ? catalog.Mashups.Where(x => x.IsPlayable && x.FileExists).OrderByDescending(x => x.Songs.Count).ThenByDescending(x => x.Seconds).FirstOrDefault()
+                : catalog.Find(id);
+            if (!Check($"full mashup: '{id}' is in mashups.json, playable, its mix exists",
+                    found != null && found.IsPlayable && found.FileExists && found.Path != null,
+                    $"{catalog.Status}; {string.Join(", ", catalog.Mashups.Select(x => $"{x.Id}{(x.IsPlayable ? "" : " (" + MashupCatalog.WhyNotPlayable(x) + ")")}"))}"))
+                yield break;
+            Mashup m = found!;
+            MelodyGraphPanel graph = loader.MelodyGraph!;
+            float listener = AudioListener.volume;
+            AudioListener.volume = 0f;   // silent on this machine's speakers; the mix plays at full level
+            float volume = player.Volume;
+            player.Volume = 1f;
+            List<SegmentTiming> rows = m.Segments.Select((g, i) => new SegmentTiming { Index = i }).ToList();
+            List<int> order = new();
+            Stopwatch wall = Stopwatch.StartNew();
+            double Now() => wall.Elapsed.TotalSeconds;
+            int finished = 0;
+            double finishedWall = -1, finishedAudio = -1;
+            double audioT0 = -1, wallT0 = 0, audioT1 = -1, wallT1 = 0;
+            double sumSq = 0;
+            long samples = 0;
+            float[] decoded = new float[4096];
+            string clockSeen = "";
+            void OnFinished(Mashup x)
+            {
+                finished++;
+                if (finishedWall < 0)
+                {
+                    finishedWall = Now();
+                    finishedAudio = player.CurrentSeconds;
+                }
+            }
+            player.MixFinished += OnFinished;
+            double completedAt = -1;
+            try
+            {
+                panel.HandleKey(Key.P);
+                yield return Frames(2);
+                panel.Select(panel.Paths.ToList().IndexOf(m.Path!));
+                yield return Frames(2);
+                wall.Restart();
+                panel.HandleKey(Key.Enter);
+                int last = -1;
+                double budget = m.Duration + 25;
+                while (Now() < budget)
+                {
+                    if (d.CurrentMashup == m)
+                    {
+                        int si = d.SegmentIndex;
+                        double t = player.CurrentSeconds;
+                        if (si != last && si >= 0 && si < rows.Count)
+                        {
+                            SegmentTiming r = rows[si];
+                            if (r.EnteredWall < 0)
+                            {
+                                r.EnteredWall = Now();
+                                r.EnteredAudio = t;
+                                r.Clock = player.ClockSource;
+                                r.Step = d.StepIndex;
+                                r.VocalStep = d.VocalStepIndex;
+                            }
+                            order.Add(si);
+                            last = si;
+                        }
+                        if (si >= 0 && si < rows.Count && !rows[si].MidSampled)
+                        {
+                            MashupSegment g = m.Segments[si];
+                            if (t >= (g.Start + g.End) / 2)
+                            {
+                                SegmentTiming r = rows[si];
+                                r.MidSampled = true;
+                                r.MidLines = graph.Lines.Count(x => x.Playing);
+                                r.MidDots = graph.Dots.Count(x => x.Active);
+                                r.MidVoicedDots = graph.Dots.Count(x => x.Active && x.Voiced);
+                                r.MidChord = graph.ChordText;
+                            }
+                        }
+                        AudioClip? audio = player.CurrentAudio;
+                        AudioSource? source = player.CurrentSource;
+                        if (player.ClockSource == "audio" && source != null && source.isPlaying && !player.Complete)
+                        {
+                            clockSeen = "audio";
+                            if (t >= 2 && audioT0 < 0)
+                            {
+                                audioT0 = t;
+                                wallT0 = Now();
+                            }
+                            if (audioT0 >= 0 && t < m.Duration - 2)
+                            {
+                                audioT1 = t;
+                                wallT1 = Now();
+                            }
+                            int frame = source.timeSamples, channels = audio != null ? Math.Max(1, audio.channels) : 1;
+                            if (audio != null && t > 1 && frame + decoded.Length / channels < audio.samples && audio.GetData(decoded, frame))
+                            {
+                                foreach (float v in decoded) sumSq += v * v;
+                                samples += decoded.Length;
+                            }
+                        }
+                        else if (clockSeen.Length == 0) clockSeen = player.ClockSource;
+                    }
+                    if (d.TourComplete)
+                    {
+                        if (completedAt < 0) completedAt = Now();
+                        if (Now() - completedAt > 1.5) break;
+                    }
+                    yield return null;
+                }
+            }
+            finally
+            {
+                player.MixFinished -= OnFinished;
+                AudioListener.volume = listener;
+                player.Volume = volume;
+            }
+
+            double rate = audioT1 > audioT0 && wallT1 > wallT0 ? (audioT1 - audioT0) / (wallT1 - wallT0) : 0;
+            double rmsDb = samples > 0 ? 20 * Math.Log10(Math.Max(1e-9, Math.Sqrt(sumSq / samples))) : -999;
+            timingJson.Clear();
+            foreach (SegmentTiming r in rows)
+            {
+                MashupSegment g = m.Segments[r.Index];
+                string inst = g.InstrumentalSong >= 0 ? m.Songs[g.InstrumentalSong].Title : g.Instrumental;
+                string voc = g.VocalSong >= 0 ? m.Songs[g.VocalSong].Title : "-";
+                double err = r.EnteredAudio >= 0 ? (r.EnteredAudio - g.Start) * 1000 : double.NaN;
+                string line = $"segment {r.Index + 1}/{rows.Count} {MashupSegment.KindName(g.Kind)} {g.Start:0.00}-{g.End:0.00} s ({g.Length:0.00} s) " +
+                              $"instrumental {inst}, vocal {voc}, {g.Key} {g.Bpm:0.0} BPM, chord match {MashupCatalog.Percent(g.ChordMatch)}: " +
+                              $"entered at {r.EnteredAudio:0.000} s on the {r.Clock} clock ({err:+0;-0} ms), wall {r.EnteredWall:0.00} s, step {r.Step + 1}, vocal step {r.VocalStep + 1}, " +
+                              $"mid-segment {r.MidLines} bright melodies, {r.MidDots} light points ({r.MidVoicedDots} voiced), chord {r.MidChord}";
+                Debug.Log("[mashup-full] " + line);
+                timingJson.Add($"{{\"segment\": {r.Index}, \"kind\": \"{MashupSegment.KindName(g.Kind)}\", \"start_s\": {F(g.Start)}, \"end_s\": {F(g.End)}, " +
+                               $"\"instrumental\": \"{Esc(g.Instrumental)}\", \"vocal\": \"{Esc(g.Vocal)}\", \"key\": \"{Esc(g.Key)}\", \"bpm\": {F(g.Bpm, "0.00")}, " +
+                               $"\"chord_match\": {(g.ChordMatch is double c ? F(c) : "null")}, \"beat_error_ms\": {(g.BeatErrorMs is double b ? F(b, "0.0") : "null")}, " +
+                               $"\"entered_audio_s\": {F(r.EnteredAudio)}, \"entry_error_ms\": {F(err, "0.0")}, \"entered_wall_s\": {F(r.EnteredWall)}, \"clock\": \"{Esc(r.Clock)}\", " +
+                               $"\"step\": {r.Step}, \"vocal_step\": {r.VocalStep}, \"mid_bright_melodies\": {r.MidLines}, \"mid_light_points\": {r.MidDots}, " +
+                               $"\"mid_voiced_light_points\": {r.MidVoicedDots}, \"mid_chord\": \"{Esc(r.MidChord)}\"}}");
+            }
+            Debug.Log($"[mashup-full] {m.Id}: {rows.Count} segments; mix {m.Seconds:0.000} s; finished at {finishedAudio:0.000} s of the mix (wall {finishedWall:0.00} s, ×{finished}); " +
+                      $"tour complete at wall {completedAt:0.00} s; audio/wall rate {rate:0.0000}; decoded level at the playhead {rmsDb:0.0} dBFS rms");
+
+            Check($"full mashup '{m.Id}': every segment entered once, in order",
+                order.SequenceEqual(Enumerable.Range(0, rows.Count)), string.Join(",", order));
+            Check($"full mashup '{m.Id}': the whole mix plays on the audio clock",
+                clockSeen == "audio" && rows.All(r => r.Clock == "audio"), string.Join(", ", rows.Select(r => r.Clock)));
+            Check($"full mashup '{m.Id}': each segment is entered within 100 ms of its planned start (audio clock)",
+                rows.All(r => r.EnteredAudio >= 0 && Math.Abs(r.EnteredAudio - m.Segments[r.Index].Start) < .1),
+                string.Join(", ", rows.Select(r => $"{(r.EnteredAudio - m.Segments[r.Index].Start) * 1000:0}")) + " ms");
+            Check($"full mashup '{m.Id}': the audio clock runs at real time (within 1%)", Math.Abs(rate - 1) < .01, rate.ToString("0.0000", CultureInfo.InvariantCulture));
+            Check($"full mashup '{m.Id}': the mix finishes once, at its end (±0.2 s), and the tour completes",
+                finished == 1 && Math.Abs(finishedAudio - m.Duration) < .2 && completedAt > 0, $"×{finished} at {finishedAudio:0.000} s of {m.Duration:0.000} s");
+            Check($"full mashup '{m.Id}': the wall time of the whole mix matches its length (±1.5 s)",
+                completedAt > 0 && Math.Abs(completedAt - m.Duration) < 1.5, $"{completedAt:0.00} s vs {m.Duration:0.00} s");
+            Check($"full mashup '{m.Id}': the decoded mix under the playhead is not silence (rms above -45 dBFS)", rmsDb > -45, $"{rmsDb:0.0} dBFS");
+            Check($"full mashup '{m.Id}': mid-changeover two melodies are bright with two light points; elsewhere at most one",
+                rows.All(r => r.MidSampled && (m.Segments[r.Index].Kind == MashupSegmentKind.Changeover ? r.MidLines == 2 && r.MidDots == 2 : r.MidLines <= 1 && r.MidDots <= 1)),
+                string.Join(", ", rows.Select(r => $"{r.Index}:{r.MidLines}/{r.MidDots}")));
+            Check($"full mashup '{m.Id}': the step follows the instrumental and the vocal step the vocal",
+                rows.All(r => r.Step == m.InstrumentalStep(m.Segments[r.Index]) &&
+                              (m.Segments[r.Index].Kind != MashupSegmentKind.Changeover || r.VocalStep == m.VocalStep(m.Segments[r.Index]))),
+                string.Join(", ", rows.Select(r => $"{r.Index}:{r.Step}/{r.VocalStep}")));
+            panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+            if (panel.IsOpen) panel.HandleKey(Key.Escape);
+            yield return Frames(2);
+        }
+
         static string F(double v, string format = "0.000") =>
             double.IsNaN(v) || double.IsInfinity(v) ? "null" : v.ToString(format, CultureInfo.InvariantCulture);
 
@@ -698,10 +1059,12 @@ namespace MusicHistory.EditorTools
                 json.Append(string.Join(",", checks.Select(c =>
                     $"\n    {{\"name\": \"{Esc(c.name)}\", \"ok\": {(c.ok ? "true" : "false")}, \"detail\": \"{Esc(c.detail)}\"}}")));
                 json.Append("\n  ]");
-                bool full = FullPathId.Length > 0;
+                bool full = FullPathId.Length > 0, fullMix = !full && FullMashupId.Length > 0;
                 if (full) json.Append(",\n  \"steps\": [").Append(string.Join(",", timingJson.Select(t => "\n    " + t))).Append("\n  ]");
+                if (fullMix) json.Append(",\n  \"segments\": [").Append(string.Join(",", timingJson.Select(t => "\n    " + t))).Append("\n  ]");
                 json.Append("\n}\n");
-                File.WriteAllText(Path.Combine(dir, full ? "paths_fullplay.json" : "paths_playmode.json"), json.ToString(), new UTF8Encoding(false));
+                string name = full ? "paths_fullplay.json" : fullMix ? "mashup_fullplay.json" : "paths_playmode.json";
+                File.WriteAllText(Path.Combine(dir, name), json.ToString(), new UTF8Encoding(false));
             }
             catch (Exception e)
             {

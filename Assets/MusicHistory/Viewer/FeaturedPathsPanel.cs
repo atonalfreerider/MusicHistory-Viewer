@@ -27,6 +27,12 @@ namespace MusicHistory.Viewer
     /// and a time bar, with Prev / Pause / Next / Stop. Esc goes back one level (tour → list →
     /// closed). Uses an EventSystem with InputSystemUIInputModule (the project runs the new Input
     /// System only); navigation events are off so W A S D and Enter never drive the UI.
+    ///
+    /// A path with a mashup mix plays it as one continuous mix: the strip then names the segment
+    /// ("Changeover: &lt;vocal song&gt; vocal over &lt;instrumental song&gt;", morph, full mix), the key
+    /// and BPM heard and the chord match; the instrumental's chip is lit, the vocal's chip marked;
+    /// the time bar covers the whole mix with its changeovers marked; the melody graph
+    /// (<see cref="MelodyGraphPanel"/>) sits above the strip, toggled by M or the Melody button.
     /// </summary>
     public sealed class FeaturedPathsPanel : MonoBehaviour
     {
@@ -114,8 +120,10 @@ namespace MusicHistory.Viewer
         readonly List<ChipView> chips = new();
         readonly List<TextMeshProUGUI> chipArrows = new();
         Image progressTrack = null!, progressFill = null!, glideMark = null!;
-        Button prevButton = null!, pauseButton = null!, nextButton = null!, stopButton = null!;
-        TextMeshProUGUI pauseLabel = null!;
+        Button prevButton = null!, pauseButton = null!, nextButton = null!, stopButton = null!, melodyButton = null!;
+        TextMeshProUGUI pauseLabel = null!, melodyLabel = null!;
+        Image melodyBack = null!;
+        readonly List<Image> segmentMarks = new();
 
         // Camera pose the list set when it opened (restored to the full overview on close if untouched).
         Vector3 framedPosition;
@@ -176,6 +184,8 @@ namespace MusicHistory.Viewer
         public Button? NextButton => nextButton;
         public Button? PrevButton => prevButton;
         public Button? PauseButton => pauseButton;
+        /// <summary>Shows or hides the melody graph while a mashup plays (M).</summary>
+        public Button? MelodyButton => melodyButton;
         /// <summary>The row objects (index = row slot; <see cref="RowView.PathIndex"/> is the path).</summary>
         public IReadOnlyList<RowView> Rows => rows;
         public IReadOnlyList<ChipView> Chips => chips;
@@ -194,6 +204,7 @@ namespace MusicHistory.Viewer
             rows.Clear();
             chips.Clear();
             chipArrows.Clear();
+            segmentMarks.Clear();
             detailSteps.Clear();
             buttonIcon.Clear();
             paths.Clear();
@@ -435,11 +446,14 @@ namespace MusicHistory.Viewer
             row.Title.text = GraphHud.Esc(p.Title.Length > 0 ? p.Title : p.Id);
             // The font has no ellipsis glyph: a long title shrinks a little instead of losing letters.
             UiKit.FitWidth(row.Title, row.TitleWidth, TitleSize, MinTitleSize);
-            row.Duration.text = PathCatalog.Clock(p.Seconds > 0 ? p.Seconds : SumSeconds(p));
+            // A path with a mashup mix plays it: its length is the mix's.
+            Mashup? mix = loader.Director != null ? loader.Director.MashupFor(p) : null;
+            row.Duration.text = PathCatalog.Clock(mix != null ? mix.Duration : p.Seconds > 0 ? p.Seconds : SumSeconds(p));
             row.Count.text = $"{p.Steps.Count} song{(p.Steps.Count == 1 ? "" : "s")}";
             row.Era.text = p.FirstYear > 0 ? (p.FirstYear == p.LastYear ? $"{p.FirstYear}" : $"{p.FirstYear}–{p.LastYear}") : "";
             string subtitle = p.Subtitle.Length > 0 ? p.Subtitle.Replace("->", "→") : $"{p.FirstYear} → {p.LastYear} · {p.Steps.Count} songs";
             if (!p.IsPlayable) subtitle = "not in this graph · " + subtitle;
+            else if (mix != null) subtitle = "mashup mix · " + subtitle;
             else if (p.MissingRenders > 0) subtitle = $"{p.MissingRenders} render{(p.MissingRenders == 1 ? "" : "s")} missing (MIDI instead) · " + subtitle;
             row.Subtitle.text = GraphHud.Esc(subtitle);
             // paths.json subtitles read "1997 -> 2019 · 3 songs · …": the count column would repeat
@@ -558,6 +572,16 @@ namespace MusicHistory.Viewer
             UiKit.Place((RectTransform)nextButton.transform, bx + 216, 162, 100, 32);
             stopButton = MakeButton(strip, "Stop", "■  Stop", 15, new Color(1, 1, 1, .08f), TextColor, out _);
             UiKit.Place((RectTransform)stopButton.transform, bx + 324, 162, 100, 32);
+            // Mashups only: the melody graph toggle, left of Prev.
+            melodyButton = MakeButton(strip, "Melody", "Melody  M", 15, new Color(1, 1, 1, .08f), TextColor, out melodyBack);
+            UiKit.Place((RectTransform)melodyButton.transform, bx - 128, 162, 120, 32);
+            melodyLabel = melodyButton.GetComponentInChildren<TextMeshProUGUI>();
+            melodyButton.onClick.AddListener(() =>
+            {
+                Deselect();
+                ToggleMelody();
+            });
+            UiKit.Show(melodyButton, false);
             prevButton.onClick.AddListener(() => { Deselect(); if (Director.IsTouring) Director.Previous(); });
             nextButton.onClick.AddListener(() => { Deselect(); if (Director.IsTouring) Director.Next(); });
             pauseButton.onClick.AddListener(() => { Deselect(); PauseOrReplay(); });
@@ -616,6 +640,8 @@ namespace MusicHistory.Viewer
             if (button != null && button.gameObject.activeInHierarchy) visibleRects.Add(button);
             if (list != null && list.gameObject.activeInHierarchy) visibleRects.Add(list);
             if (strip != null && strip.gameObject.activeInHierarchy) visibleRects.Add(strip);
+            if (loader != null && loader.MelodyGraph != null && loader.MelodyGraph.Showing && loader.MelodyGraph.PanelRect is RectTransform melody)
+                visibleRects.Add(melody);
             return visibleRects;
         }
 
@@ -623,11 +649,14 @@ namespace MusicHistory.Viewer
         public bool ContainsScreenPoint(Vector2 screen)
         {
             if (root == null) return false;
-            Canvas canvas = loader.Hud.Canvas;
-            Camera? cam = canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
             IReadOnlyList<RectTransform> rects = VisibleRects();
             for (int i = 0; i < rects.Count; i++)
+            {
+                // The melody graph has a canvas of its own (on the view camera).
+                Canvas? canvas = rects[i].GetComponentInParent<Canvas>();
+                Camera? cam = canvas == null || canvas.renderMode == RenderMode.ScreenSpaceOverlay ? null : canvas.worldCamera;
                 if (RectTransformUtility.RectangleContainsScreenPoint(rects[i], screen, cam)) return true;
+            }
             return false;
         }
 
@@ -736,6 +765,15 @@ namespace MusicHistory.Viewer
             if (Director.TourComplete) Director.GoTo(0);
             else Director.TogglePause();
             RefreshNowPlaying();
+        }
+
+        /// <summary>M or the Melody button: shows or hides the melody graph (only while a mashup plays).</summary>
+        public bool ToggleMelody()
+        {
+            if (State != PanelState.Playing || Director.CurrentMashup == null || loader.MelodyGraph == null) return false;
+            loader.MelodyGraph.Toggle();
+            RefreshNowPlaying();
+            return true;
         }
 
         /// <summary>A chip was clicked: jump to that step (it morphs from the song heard before).</summary>
@@ -854,16 +892,19 @@ namespace MusicHistory.Viewer
         public void RefreshList()
         {
             if (list == null) return;
-            int playable = 0;
+            int playable = 0, mixes = 0;
             double total = 0;
             foreach (FeaturedPath p in paths)
             {
                 if (p.IsPlayable) playable++;
-                total += p.Seconds > 0 ? p.Seconds : SumSeconds(p);
+                Mashup? mix = Director.MashupFor(p);
+                if (mix != null) mixes++;
+                total += mix != null ? mix.Duration : p.Seconds > 0 ? p.Seconds : SumSeconds(p);
             }
             UiKit.SetText(listSummary, paths.Count == 0
                 ? "none yet"
                 : $"{paths.Count} path{(paths.Count == 1 ? "" : "s")} · {PathCatalog.Clock(total)} of recording previews" +
+                  (mixes > 0 ? $" · {mixes} mashup mix{(mixes == 1 ? "" : "es")}" : "") +
                   (playable < paths.Count ? $" · {paths.Count - playable} not in this graph" : ""));
 
             // Detail of the hovered row, else the selected one.
@@ -1038,6 +1079,14 @@ namespace MusicHistory.Viewer
             if (!d.IsTouring || p == null) return;
             if (State != PanelState.Playing) OnTourChanged();
             Color accent = AccentOf(p);
+            if (d.CurrentMashup is Mashup mashup && d.CurrentSegment is MashupSegment segment)
+            {
+                RefreshMashup(d, p, mashup, segment, accent);
+                return;
+            }
+            LayoutButtons(false);
+            foreach (Image mark in segmentMarks) UiKit.Show(mark, false);
+            UiKit.Place(stripReadout.rectTransform, Pad, 164, 740, 30);
             int step = d.StepIndex;
             WalkthroughDirector.StepReadout r = d.Readout();
             PathStep? s = step < p.Steps.Count ? p.Steps[step] : null;
@@ -1141,6 +1190,138 @@ namespace MusicHistory.Viewer
             nextButton.interactable = step + 1 < p.Steps.Count;
         }
 
+        /// <summary>The bottom-right buttons; a mashup adds the melody graph toggle left of Prev.</summary>
+        void LayoutButtons(bool mashup)
+        {
+            UiKit.Show(melodyButton, mashup);
+        }
+
+        /// <summary>The now-playing strip for a mashup mix: the segment, what is heard, the chord match, the whole mix's time bar.</summary>
+        void RefreshMashup(WalkthroughDirector d, FeaturedPath p, Mashup m, MashupSegment g, Color accent)
+        {
+            LayoutButtons(true);
+            int step = d.StepIndex, vocal = d.VocalStepIndex, n = p.Steps.Count;
+            double t = d.MixSeconds, length = d.MashupAudio != null ? d.MashupAudio.DurationSeconds : m.Duration;
+            stripAccent.color = accent;
+            stripKicker.color = accent;
+            string state = d.TourComplete ? "PATH COMPLETE" : d.ActivePlayer != null && d.ActivePlayer.Paused ? "PAUSED" : "NOW PLAYING";
+            UiKit.SetText(stripKicker, $"{state} · FEATURED PATH · CONTINUOUS MIX");
+            UiKit.SetText(stripTitle, GraphHud.Esc(p.Title));
+
+            float right = StripWidth - Pad;
+            stepPill.Set($"STEP {step + 1} / {n}");
+            right = stepPill.PlaceRight(right, 22) - 8;
+            MashupPlayer? player = d.MashupAudio;
+            if (player != null && player.CurrentAudio != null)
+            {
+                recordingPill.SetColors(UiKit.WithAlpha(RecordingColor, .2f), RecordingColor);
+                recordingPill.Set("● MASHUP MIX");
+            }
+            else
+            {
+                recordingPill.SetColors(new Color(1, 1, 1, .08f), MutedColor);
+                recordingPill.Set(player != null && player.ClockSource == "loading" ? "LOADING MIX" : "MASHUP · SILENT CLOCK");
+            }
+            recordingPill.PlaceRight(right, 22);
+
+            // Chips: the instrumental's song lit; during a changeover the vocal's song marked in its melody colour.
+            float x = Pad, width = StripWidth - 2 * Pad, arrow = 22f;
+            float chipWidth = (width - (n - 1) * arrow) / Math.Max(1, n);
+            for (int i = 0; i < chips.Count; i++)
+            {
+                ChipView c = chips[i];
+                bool on = i < n;
+                UiKit.Show(c, on);
+                if (i > 0 && i - 1 < chipArrows.Count) UiKit.Show(chipArrows[i - 1], on);
+                if (!on) continue;
+                if (i > 0) UiKit.Place(chipArrows[i - 1].rectTransform, x - arrow, 70, arrow, 34);
+                UiKit.Place((RectTransform)c.transform, x, 70, chipWidth, 34);
+                PathStep ps = p.Steps[i];
+                bool current = i == step, singing = i == vocal, past = i < step;
+                MashupSong? song = m.SongForStep(i);
+                Color voice = song != null ? MelodyGraphPanel.BrightColor(song.Index) : accent;
+                c.Background.color = current ? UiKit.WithAlpha(accent, .26f) : singing ? UiKit.WithAlpha(voice, .16f) : past ? new Color(1, 1, 1, .07f) : new Color(1, 1, 1, .035f);
+                c.Label.color = current || singing ? TextColor : past ? new Color(.8f, .82f, .85f, 1f) : MutedColor;
+                string tag = singing ? $"  <size=78%><color={UiKit.Hex(voice)}><b>VOCAL</b></color></size>"
+                    : current && vocal >= 0 ? $"  <size=78%><color={UiKit.Hex(accent)}><b>BACKING</b></color></size>" : "";
+                UiKit.SetText(c.Label, $"<color={(current ? UiKit.Hex(accent) : singing ? UiKit.Hex(voice) : Muted)}>{ps.Year}</color>  " +
+                                       $"{(current || singing ? "<b>" : "")}{GraphHud.Esc(ps.Title)}{(current || singing ? "</b>" : "")}{tag}");
+                x += chipWidth + arrow;
+            }
+
+            // What is heard now.
+            string Song(int index) => index >= 0 && index < m.Songs.Count ? m.Songs[index].Title : "";
+            string Colored(int index) => $"<b><color={UiKit.Hex(MelodyGraphPanel.BrightColor(index))}>{GraphHud.Esc(Song(index))}</color></b>";
+            PathVia? via = vocal >= 0 && vocal < n ? p.Steps[vocal].Via : step < n ? p.Steps[step].Via : null;
+            string identity = via != null && via.Identity.Length > 0
+                ? $"   <size=85%><color={Muted}>via</color> <color={UiKit.Hex(accent)}>{GraphHud.Esc(via.Identity)}</color></size>" : "";
+            string what = g.Kind switch
+            {
+                MashupSegmentKind.Changeover => $"<color={Muted}>Changeover</color>  {Colored(g.VocalSong)} <color={Muted}>vocal over</color> <b>{GraphHud.Esc(Song(g.InstrumentalSong))}</b>{identity}",
+                MashupSegmentKind.Morph => $"<color={Muted}>Morph</color>  <b>{GraphHud.Esc(Song(g.InstrumentalSong))}</b> <color={Muted}>glides into its own key and tempo</color>{identity}",
+                _ => $"<color={Muted}>Full mix</color>  {Colored(g.InstrumentalSong)}" +
+                     $"  <color={Muted}>{(g.Index == 0 ? "the root song" : g.Index == m.Segments.Count - 1 ? "the last song, to the end" : "")}</color>"
+            };
+            UiKit.SetText(stripVia, what);
+            bool strong = via != null && via.Strong && g.Kind != MashupSegmentKind.Full;
+            UiKit.Show(strongPill.Root, strong);
+            if (strong)
+            {
+                strongPill.Set(via!.Z > 0 ? $"STRONG MATCH · z {via.Z.ToString("0.0", CultureInfo.InvariantCulture)}" : "STRONG MATCH");
+                float viaWidth = stripVia.GetPreferredValues(stripVia.text, 2000, 0).x;
+                strongPill.PlaceLeft(Pad + Mathf.Min(viaWidth, 820) + 14, 116, 22);
+            }
+
+            // Key, tempo, chord match, the vocal's transposition, the beat alignment.
+            List<string> parts = new();
+            bool morphing = g.Kind == MashupSegmentKind.Morph && Math.Abs(g.BpmStart - g.Bpm) > .05;
+            parts.Add($"<color={Muted}>Key</color> <b>{GraphHud.Esc(g.Key)}</b>");
+            parts.Add(morphing
+                ? $"<color={Muted}>BPM</color> {F(g.BpmStart, "0.#")} <color={Muted}>→</color> <b>{F(g.Bpm, "0.#")}</b> <color={Muted}>(now {F(g.BpmAt(t), "0.0")})</color>"
+                : $"<color={Muted}>BPM</color> <b>{F(g.Bpm, "0.#")}</b>");
+            if (g.ChordMatch is double cm) parts.Add($"<color={Muted}>chords match</color> <b>{MashupCatalog.Percent(cm)}</b>");
+            if (g.Kind == MashupSegmentKind.Changeover && g.VocalShiftSemitones is int shift)
+                parts.Add($"<color={Muted}>vocal</color> <b>{(shift > 0 ? "+" : "")}{shift} st</b>" +
+                          (g.VocalTempoRatio is double ratio && Math.Abs(ratio - 1) > .005 ? $" <color={Muted}>×{F(ratio, "0.00")}</color>" : ""));
+            if (g.BeatErrorMs is double ms) parts.Add($"<color={Muted}>beats ±{F(ms, "0")} ms</color>");
+            float readoutWidth = StripWidth - Pad - 4 * 100 - 3 * 8 - 128 - Pad - 12;
+            string readout = "";
+            for (int k = parts.Count; k >= 1; k--)
+            {
+                readout = (morphing ? $"<color={UiKit.Hex(accent)}>gliding</color>   " : "") + string.Join($"   <color={Muted}>·</color>   ", parts.GetRange(0, k));
+                if (stripReadout.GetPreferredValues(readout, 4000, 0).x <= readoutWidth) break;
+            }
+            UiKit.SetText(stripReadout, readout);
+            UiKit.Place(stripReadout.rectTransform, Pad, 164, readoutWidth, 30);
+            UiKit.SetText(stripTime, $"{PathCatalog.Clock(t)} / {PathCatalog.Clock(length)}");
+
+            // The whole mix on the time bar; changeovers (white) and morphs (accent) marked above it.
+            float barWidth = progressTrack.rectTransform.sizeDelta.x;
+            UiKit.Place(progressFill.rectTransform, 0, 0, Mathf.Max(5f, barWidth * (float)(length > 0 ? Math.Min(1, t / length) : 0)), 5);
+            progressFill.color = accent;
+            UiKit.Show(glideMark, false);
+            int marks = 0;
+            foreach (MashupSegment s in m.Segments)
+            {
+                if (s.Kind == MashupSegmentKind.Full || length <= 0) continue;
+                while (segmentMarks.Count <= marks) segmentMarks.Add(UiKit.Image($"Segment {segmentMarks.Count + 1}", progressTrack.transform, Color.white, 1));
+                Image mark = segmentMarks[marks++];
+                UiKit.Show(mark, true);
+                float x0 = barWidth * (float)(s.Start / length), x1 = barWidth * (float)(Math.Min(length, s.End) / length);
+                bool now = s.Index == g.Index;
+                mark.color = s.Kind == MashupSegmentKind.Changeover ? new Color(1, 1, 1, now ? .75f : .32f) : UiKit.WithAlpha(accent, now ? .95f : .55f);
+                UiKit.Place(mark.rectTransform, x0 + 1, -6, Mathf.Max(2f, x1 - x0 - 2), 3);
+            }
+            for (int k = marks; k < segmentMarks.Count; k++) UiKit.Show(segmentMarks[k], false);
+
+            bool graph = loader.MelodyGraph != null && loader.MelodyGraph.UserVisible;
+            melodyBack.color = graph ? UiKit.WithAlpha(accent, .3f) : new Color(1, 1, 1, .08f);
+            UiKit.SetText(melodyLabel, graph ? "Melody  M" : $"<color={Muted}>Melody  M</color>");
+            UiKit.SetText(pauseLabel, d.TourComplete ? "►  Replay" : d.ActivePlayer != null && d.ActivePlayer.Paused ? "►  Resume" : "II  Pause");
+            prevButton.interactable = t > .5 || d.TourComplete;
+            nextButton.interactable = d.MashupStepReached + 1 < n;
+        }
+
         static string F(double v, string format) => v.ToString(format, CultureInfo.InvariantCulture);
         static string Signed(double v) => v.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture);
 
@@ -1151,7 +1332,7 @@ namespace MusicHistory.Viewer
             Key.P, Key.Escape, Key.Enter, Key.NumpadEnter, Key.UpArrow, Key.DownArrow, Key.PageUp, Key.PageDown,
             Key.Digit1, Key.Digit2, Key.Digit3, Key.Digit4, Key.Digit5, Key.Digit6, Key.Digit7, Key.Digit8, Key.Digit9,
             Key.Numpad1, Key.Numpad2, Key.Numpad3, Key.Numpad4, Key.Numpad5, Key.Numpad6, Key.Numpad7, Key.Numpad8, Key.Numpad9,
-            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C
+            Key.Space, Key.N, Key.B, Key.LeftArrow, Key.RightArrow, Key.C, Key.M
         };
 
         void Update()
@@ -1229,6 +1410,8 @@ namespace MusicHistory.Viewer
                         case Key.C:
                             d.ToggleApplesToApples();
                             return true;
+                        case Key.M:
+                            return ToggleMelody();
                     }
                     return false;
             }
