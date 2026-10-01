@@ -56,6 +56,8 @@ namespace MusicHistory.Viewer
         public bool HideDimmed;
         [Tooltip("Pixels kept free around each label when decluttering.")]
         public float LabelPadding = 3f;
+        /// <summary>Pixels a right-side label keeps from the screen's left and right edges.</summary>
+        public float EdgeMargin = 16f;
 
         /// <summary>
         /// Screen rects (pixels, origin bottom-left) that labels keep clear of, such as HUD panels.
@@ -225,6 +227,16 @@ namespace MusicHistory.Viewer
                     {
                         t.position = mirrored;
                         label.ScreenRect = left;
+                    }
+                    // Fitting on neither side (a big bubble near a narrow frame's centre), it slides
+                    // back inside the screen, over the bubble's edge if it must.
+                    Rect r = label.ScreenRect;
+                    float shift = r.xMax > cam.pixelWidth - EdgeMargin ? cam.pixelWidth - EdgeMargin - r.xMax
+                        : r.xMin < EdgeMargin ? EdgeMargin - r.xMin : 0f;
+                    if (shift != 0f && r.width < cam.pixelWidth - 2 * EdgeMargin)
+                    {
+                        t.position += right * (shift * worldPerPixel);
+                        label.ScreenRect = new Rect(r.x + shift, r.y, r.width, r.height);
                     }
                 }
                 candidates.Add(label);
