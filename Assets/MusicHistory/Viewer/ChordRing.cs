@@ -386,7 +386,8 @@ namespace MusicHistory.Viewer
                 bloom = new MelodyLightRig(rigParent!, area, size + 2f * GlowPad, size + 2f * GlowPad, glow, MelodyLightRig.WheelLayer, new Vector3(100000f, -100000f, 0f))
                 {
                     BloomIntensity = 1.1f,
-                    BloomScatter = .45f
+                    BloomScatter = .45f,
+                    EdgeFade = .15f
                 };
                 bloom.EnsureLights(0);
             }

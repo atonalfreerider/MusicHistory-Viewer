@@ -214,6 +214,14 @@ namespace MusicHistory.Viewer
             Paint(f, color, FlareIntensity * level);
         }
 
+        /// <summary>Fades the composite to nothing over this fraction of the texture toward its borders
+        /// (0 = off), so the bloom's haze never shows the texture's square edge.</summary>
+        public float EdgeFade
+        {
+            get => compositeMaterial.GetFloat("_EdgeFade");
+            set => compositeMaterial.SetFloat("_EdgeFade", Mathf.Clamp(value, 0f, .5f));
+        }
+
         /// <summary>The bloom's tint (the playing melody's colour, so the glow takes its hue).</summary>
         public void SetTint(Color color)
         {
