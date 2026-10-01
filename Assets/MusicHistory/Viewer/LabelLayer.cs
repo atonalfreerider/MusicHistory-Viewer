@@ -31,6 +31,8 @@ namespace MusicHistory.Viewer
         public float Priority;
         /// <summary>False when hidden by decluttering (overlap or behind the camera).</summary>
         public bool Placed = true;
+        /// <summary>A <see cref="LabelPlacement.Right"/> label drawn mirrored to the bubble's left (it would leave the screen).</summary>
+        public bool Flipped;
         internal MeshRenderer? Renderer;
         internal Vector2 LocalSize;
         public Rect ScreenRect;
@@ -205,6 +207,26 @@ namespace MusicHistory.Viewer
                     LabelPlacement.Left => new Rect(sp.x - size.x, sp.y - size.y * .5f, size.x, size.y),
                     _ => new Rect(sp.x, sp.y - size.y * .5f, size.x, size.y)
                 };
+                if (label.Placement == LabelPlacement.Right)
+                {
+                    // A right-side label that would run off the screen's right edge mirrors to the
+                    // bubble's left (a portrait frame is narrow); it stays mirrored while that fits.
+                    Vector3 mirrored = position - 2f * right * Vector3.Dot(position - anchor, right);
+                    Vector3 msp = cam.WorldToScreenPoint(mirrored);
+                    Rect left = new(msp.x - size.x, msp.y - size.y * .5f, size.x, size.y);
+                    bool rightFits = label.ScreenRect.xMax <= cam.pixelWidth, leftFits = left.xMin >= 0;
+                    bool flip = label.Flipped ? leftFits || !rightFits : !rightFits && leftFits;
+                    if (flip != label.Flipped)
+                    {
+                        label.Flipped = flip;
+                        label.Box.Alignment = flip ? TextAlignmentOptions.Right : TextAlignmentOptions.Left;
+                    }
+                    if (flip)
+                    {
+                        t.position = mirrored;
+                        label.ScreenRect = left;
+                    }
+                }
                 candidates.Add(label);
             }
 
