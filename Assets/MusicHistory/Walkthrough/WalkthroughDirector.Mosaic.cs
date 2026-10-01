@@ -14,7 +14,10 @@ namespace MusicHistory.Walkthrough
     /// (harmony) — with no narration. The step is the loop playing (<see cref="MosaicLoop"/>); the
     /// songs sounding glow at three times their size: the target in the original and harmony loops
     /// (with the harmony voices' songs), the playing piece's song in the mosaic loops (the target
-    /// faintly beside it); the camera frames them. Next / Back jump to the next / previous loop, a
+    /// faintly beside it). The camera holds one zoom for the whole mosaic (the median distance that
+    /// frames each of its songs beside the target) and only pans, slowly, to the songs singing now,
+    /// or to the singing song alone when the pair is too far apart: it never zooms per piece; the 3x
+    /// bubble and its light show who sings. Next / Back jump to the next / previous loop, a
     /// section chip (<see cref="GoToMosaicSection"/>) to its section's first loop.
     /// </summary>
     public sealed partial class WalkthroughDirector
@@ -43,12 +46,20 @@ namespace MusicHistory.Walkthrough
         public int MosaicFocusPiece { get; private set; } = -1;
         /// <summary>The songs glowing at three times their size now.</summary>
         public IReadOnlyList<SongNode> MosaicLit => mosaicLit;
-        /// <summary>The songs the camera frames now.</summary>
+        /// <summary>The songs the camera frames: every song of the mosaic in the graph, held for the whole mix.</summary>
         public IReadOnlyList<SongNode> MosaicFramed => mosaicFramed;
 
         readonly List<SongNode> mosaicLit = new(), mosaicFramed = new(), mosaicMembers = new();
         (int loop, int section, int piece) mosaicKey = (-1, -1, -1);
         string mosaicFrameKey = "";
+        float mosaicDistance;
+        (List<SongNode> nodes, SongNode focus, SongNode target)? mosaicShot;
+        float? mosaicDepth;
+        readonly List<SongNode> mosaicShotFramed = new();
+        /// <summary>The songs the camera frames now (the singing songs, or the singing song alone when they don't fit).</summary>
+        public IReadOnlyList<SongNode> MosaicShotFramed => mosaicShotFramed;
+        /// <summary>The camera's held distance for this mosaic (0 before it is chosen).</summary>
+        public float MosaicDistance => mosaicDistance;
 
         /// <summary>The melody mosaics mosaic tours play (the loader binds them first).</summary>
         public void UseMosaics(MosaicCatalog catalog)
@@ -88,6 +99,10 @@ namespace MusicHistory.Walkthrough
             MosaicFocusPiece = -1;
             mosaicKey = (-1, -1, -1);
             mosaicFrameKey = "";
+            mosaicDistance = 0f;
+            mosaicShot = null;
+            mosaicDepth = null;
+            mosaicShotFramed.Clear();
             mosaicLit.Clear();
             mosaicFramed.Clear();
         }
@@ -138,7 +153,6 @@ namespace MusicHistory.Walkthrough
             SongNode? Node(int song) =>
                 song >= 0 && song < m.Songs.Count && m.Songs[song].NodeId >= 1 && m.Songs[song].NodeId <= Loader.Nodes.Count ? Loader.NodeById(m.Songs[song].NodeId) : null;
             mosaicLit.Clear();
-            mosaicFramed.Clear();
             SongNode focus = target;
             SongNode? related = null;
             switch (st.Kind)
@@ -151,24 +165,16 @@ namespace MusicHistory.Walkthrough
                         focus = source;
                         related = target;
                         mosaicLit.Add(source);
-                        mosaicFramed.Add(source);
-                        mosaicFramed.Add(target);
                     }
-                    else
-                    {
-                        mosaicLit.Add(target);
-                        mosaicFramed.Add(target);
-                    }
+                    else mosaicLit.Add(target);
                     break;
                 case MosaicSectionKind.Harmony:
                     mosaicLit.Add(target);
                     foreach (MosaicHarmony h in m.Harmonies)
                         if (Node(h.Song) is SongNode voice && !mosaicLit.Contains(voice)) mosaicLit.Add(voice);
-                    mosaicFramed.AddRange(mosaicLit);
                     break;
                 default:
                     mosaicLit.Add(target);
-                    mosaicFramed.Add(target);
                     break;
             }
             if (CurrentClip == null || CurrentClip.NodeId != focus.NodeId) CurrentClip = focus.Song.ToClip();
@@ -180,28 +186,89 @@ namespace MusicHistory.Walkthrough
             animatedEdge = null;
             Loader.Highlighter.ShowMosaicStep(mosaicLit, related, mosaicMembers, focus);
             Loader.Hud.ShowSong(focus);
+            // One steady framing for the whole mosaic (it flies there once; seeks and pieces never move it).
+            if (mosaicFramed.Count == 0)
+            {
+                mosaicFramed.AddRange(mosaicMembers);
+                if (!mosaicFramed.Contains(target)) mosaicFramed.Insert(0, target);
+            }
+            // One zoom for the whole mosaic; the camera only pans, slowly, to the songs singing now.
+            List<SongNode> shot = new(mosaicLit);
+            if (related != null && !shot.Contains(related)) shot.Add(related);
             StringBuilder frame = new();
-            foreach (SongNode n in mosaicFramed) frame.Append(n.NodeId).Append(',');
+            foreach (SongNode n in shot) frame.Append(n.NodeId).Append(',');
             string frameKey = frame.ToString();
             if (frameKey != mosaicFrameKey)
             {
                 mosaicFrameKey = frameKey;
-                FlyToNodes(mosaicFramed);
+                mosaicShot = (shot, focus, target);
+                PanToNodes(shot, focus, target);
             }
             SegmentChanged?.Invoke();
         }
 
-        /// <summary>Flies the camera to frame <paramref name="nodes"/> at the size they are growing to.</summary>
-        void FlyToNodes(IReadOnlyList<SongNode> nodes)
+
+        (Vector3, float) MosaicItem(SongNode n) => (n.transform.position, n.Radius * SongNode.HighlightScale * 1.4f);
+
+        /// <summary>
+        /// The held distance: the median of what each song of the mosaic needs to be framed beside the
+        /// target (so most pieces show both), never closer than the target alone needs.
+        /// </summary>
+        float ChooseMosaicDistance(Camera cam, SongNode target)
+        {
+            float Need(List<(Vector3, float)> items)
+            {
+                CameraFraming.FrameAt(cam, items, Loader.Frame.ViewForward, 0f, FramingMargin, FramingViewport, out _, out float needed);
+                return needed;
+            }
+            float alone = Mathf.Max(MinFramingDistance, Need(new() { MosaicItem(target) }));
+            List<float> pairs = new();
+            foreach (SongNode n in mosaicFramed)
+                if (n != target) pairs.Add(Need(new() { MosaicItem(target), MosaicItem(n) }));
+            pairs.Sort();
+            return Mathf.Max(alone, pairs.Count > 0 ? pairs[pairs.Count / 2] : alone);
+        }
+
+        /// <summary>
+        /// Pans (zoom held) to frame <paramref name="nodes"/>; when they don't fit at the held distance,
+        /// to <paramref name="focus"/> alone.
+        /// </summary>
+        void PanToNodes(IReadOnlyList<SongNode> nodes, SongNode focus, SongNode target)
         {
             Camera? cam = Loader.ViewCamera;
             if (cam == null || nodes.Count == 0) return;
+            if (mosaicDistance <= 0f) mosaicDistance = ChooseMosaicDistance(cam, target);
             List<(Vector3, float)> items = new();
-            foreach (SongNode n in nodes) items.Add((n.transform.position, n.TargetRadius * 1.4f));
-            (flyToPosition, flyToRotation) = CameraFraming.Frame(cam, items, Loader.Frame.ViewForward, FramingMargin, MinFramingDistance, FramingViewport);
+            foreach (SongNode n in nodes) items.Add(MosaicItem(n));
+            (Vector3 p, Quaternion r) = CameraFraming.FrameAt(cam, items, Loader.Frame.ViewForward, mosaicDistance, FramingMargin, FramingViewport, out bool fits, out _);
+            mosaicShotFramed.Clear();
+            if (fits) mosaicShotFramed.AddRange(nodes);
+            else
+            {
+                (p, r) = CameraFraming.FrameAt(cam, new List<(Vector3, float)> { MosaicItem(focus) }, Loader.Frame.ViewForward, mosaicDistance,
+                    FramingMargin, FramingViewport, out _, out _);
+                mosaicShotFramed.Add(focus);
+            }
+            // One depth plane for the whole mosaic (songs sit at different depths in the graph): the
+            // camera moves only across the view, so the zoom never changes.
+            Vector3 fwd = r * Vector3.forward;
+            float depth = Vector3.Dot(p, fwd);
+            if (mosaicDepth is float held) p += fwd * (held - depth);
+            else mosaicDepth = depth;
+            (flyToPosition, flyToRotation) = (p, r);
             flyFromPosition = cam.transform.position;
             flyFromRotation = cam.transform.rotation;
             flyT = 0f;
+            flySlow = true;
+        }
+
+        /// <summary>The framing area changed (layout, orientation): the zoom is chosen again for it.</summary>
+        void RepanMosaic()
+        {
+            if (mosaicShot is not { } s) return;
+            mosaicDistance = 0f;
+            mosaicDepth = null;
+            PanToNodes(s.nodes, s.focus, s.target);
         }
 
         void OnMosaicFinished(Mosaic m)

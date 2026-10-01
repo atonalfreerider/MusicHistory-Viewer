@@ -488,11 +488,13 @@ namespace MusicHistory.EditorTools
             report.Check($"{view}: drawn labels never overlap", overlaps == 0, $"{drawn.Count} labels, {overlaps} overlapping pairs");
             // Labels keep clear of the HUD panels and the screen edge (LabelLayer.KeepClear); focus labels are exempt.
             IReadOnlyList<Rect> panels = loader.Hud.PanelScreenRects(captureWidth, captureHeight);
-            int hidden = drawn.Count(l => l.Priority < LabelLayer.FocusPriority &&
+            List<WorldLabel> bad = drawn.Where(l => l.Priority < LabelLayer.FocusPriority &&
                 (panels.Any(p => l.ScreenRect.Overlaps(p)) || l.ScreenRect.xMin < 0 || l.ScreenRect.yMin < 0 ||
-                 l.ScreenRect.xMax > captureWidth || l.ScreenRect.yMax > captureHeight));
+                 l.ScreenRect.xMax > captureWidth || l.ScreenRect.yMax > captureHeight)).ToList();
+            int hidden = bad.Count;
+            string which = string.Join("; ", bad.Take(3).Select(l => $"'{l.Box.TextField.text}' [{l.ScreenRect.xMin:0},{l.ScreenRect.yMin:0} {l.ScreenRect.width:0}x{l.ScreenRect.height:0}]"));
             report.Check($"{view}: no drawn label under a HUD panel or cut by the screen edge", hidden == 0 && panels.Count > 0,
-                $"{panels.Count} panels, {hidden} labels under a panel or off screen");
+                $"{panels.Count} panels, {hidden} labels under a panel or off screen{(hidden > 0 ? $" ({which}; capture {captureWidth}x{captureHeight})" : "")}");
         }
 
         /// <summary>

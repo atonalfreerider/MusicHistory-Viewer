@@ -298,8 +298,10 @@ are audio only: the file holds no words, and the viewer shows none. There is no 
   sounding grow to 3x with their photos: the target in the original and harmony loops (with the
   harmony voices' songs); in the mosaic loops the playing piece's song, the target glowing faintly
   beside it (between two pieces the last one stays lit). The mosaic's other songs rest undimmed with
-  their labels, everything else fades. The camera frames the lit songs (the piece's song with the
-  target).
+  their labels, everything else fades. The camera holds one zoom for the whole mosaic (the median
+  distance that frames each of its songs beside the target, clear of the wheel and the melody graph)
+  and only pans, slowly, to the songs singing now (the singing song alone when the pair is too far
+  apart): it never zooms per piece; the 3x bubble and its light show who sings.
 - **The name** sits top left like a path's (`name`, e.g. "That's All Right, Reassembled"), the chord
   wheel shows the target loop's chords (one loop round the wheel) with the chord sounding lit.
 - **The melody graph** (`Viewer/MelodyGraphPanel.Mosaic.cs`, maths in `Viewer/MosaicTimeline.cs`) is a

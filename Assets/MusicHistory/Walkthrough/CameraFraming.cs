@@ -57,6 +57,31 @@ namespace MusicHistory.Walkthrough
             return (position, rotation);
         }
 
+        /// <summary>
+        /// Like <see cref="Frame"/>, but at <paramref name="distance"/> (the zoom is held; the camera only
+        /// pans): the items land where <see cref="Frame"/> would put them. <paramref name="fits"/> is false
+        /// when they would need a longer distance; <paramref name="needed"/> is the distance they need.
+        /// </summary>
+        public static (Vector3 position, Quaternion rotation) FrameAt(Camera cam, IReadOnlyList<(Vector3 center, float radius)> items,
+            Vector3 forward, float distance, float margin, Rect? viewport, out bool fits, out float needed)
+        {
+            (Vector3 tight, Quaternion rotation) = Frame(cam, items, forward, margin, 0f, viewport);
+            Vector3 fwd = rotation * Vector3.forward, right = rotation * Vector3.right, up = rotation * Vector3.up;
+            Rect view = viewport ?? FullScreen;
+            float tanV = Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad);
+            float tanH = tanV * (cam.aspect > 0 ? cam.aspect : 16f / 9f);
+            float cx = view.center.x * 2f - 1f, cy = view.center.y * 2f - 1f;
+            // The tight framing's content centre and distance (its bounding centre on the view axis).
+            Vector3 mid = Vector3.zero;
+            foreach ((Vector3 c, float _) in items) mid += c;
+            mid /= Mathf.Max(1, items.Count);
+            needed = Vector3.Dot(mid - tight, fwd);
+            Vector3 center = tight + fwd * needed + right * (cx * tanH * needed) + up * (cy * tanV * needed);
+            fits = needed <= distance + 1e-3f;
+            Vector3 position = center - fwd * distance - right * (cx * tanH * distance) - up * (cy * tanV * distance);
+            return (position, rotation);
+        }
+
         public static float SmoothStep01(float t)
         {
             t = Mathf.Clamp01(t);

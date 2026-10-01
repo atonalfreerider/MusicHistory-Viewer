@@ -55,12 +55,14 @@ namespace MusicHistory.Walkthrough
     /// <see cref="MosaicPlayer"/>, with no narration: the target's loop, the loop rebuilt from other
     /// songs' melodies, then harmonized. The step is the loop playing; the target glows while it sings,
     /// the playing piece's song while it sings, the harmony voices' songs with the target; the camera
-    /// frames them. Next / Back jump between loops, a section chip to its section.
+    /// frames all of the mosaic's songs once and holds still. Next / Back jump between loops, a section chip to its section.
     /// </summary>
     public sealed partial class WalkthroughDirector : MonoBehaviour
     {
         public TourMode Mode = TourMode.Lineage;
         [Min(.1f)] public float FlyDuration = 1.8f;
+        [Tooltip("Seconds a mosaic's camera takes to pan from one singing song to the next (the zoom is held).")]
+        [Min(.1f)] public float MosaicPanDuration = 2.6f;
         [Min(.1f)] public float EdgeGrowDuration = 1.6f;
         [Min(0f)] public float MorphBars = 2f;
         [Tooltip("Play the normalized MIDI (graph_meta target_key, target_bpm) without morphing.")]
@@ -166,6 +168,7 @@ namespace MusicHistory.Walkthrough
         Vector3 flyFromPosition, flyToPosition;
         Quaternion flyFromRotation, flyToRotation;
         float flyT = 1f;
+        bool flySlow;
         float edgeT = 1f;
         InfluenceEdge? animatedEdge;
         bool advancePending;
@@ -563,6 +566,7 @@ namespace MusicHistory.Walkthrough
             flyFromPosition = cam.transform.position;
             flyFromRotation = cam.transform.rotation;
             flyT = 0f;
+            flySlow = false;
         }
 
         /// <summary>The camera frames the current songs again (the melody graph was shown or hidden).</summary>
@@ -572,7 +576,7 @@ namespace MusicHistory.Walkthrough
         public void Reframe(bool immediate)
         {
             if (!IsTouring || CurrentClip == null) return;
-            if (CurrentMosaic != null) FlyToNodes(mosaicFramed);
+            if (CurrentMosaic != null) RepanMosaic();
             else FlyTo(Loader.NodeById(CurrentClip.NodeId), StepPartner);
             Camera? cam = Loader.ViewCamera;
             if (!immediate || cam == null) return;
@@ -981,7 +985,7 @@ namespace MusicHistory.Walkthrough
             Camera? cam = Loader.ViewCamera;
             if (cam != null && flyT < 1f)
             {
-                flyT = Mathf.Min(1f, flyT + dt / FlyDuration);
+                flyT = Mathf.Min(1f, flyT + dt / (flySlow ? MosaicPanDuration : FlyDuration));
                 float u = CameraFraming.SmoothStep01(flyT);
                 cam.transform.SetPositionAndRotation(
                     Vector3.Lerp(flyFromPosition, flyToPosition, u),

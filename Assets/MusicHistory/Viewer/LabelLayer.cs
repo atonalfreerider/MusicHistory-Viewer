@@ -34,6 +34,7 @@ namespace MusicHistory.Viewer
         /// <summary>A <see cref="LabelPlacement.Right"/> label drawn mirrored to the bubble's left (it would leave the screen).</summary>
         public bool Flipped;
         internal MeshRenderer? Renderer;
+        internal Vector3 AnchorScreen;
         internal Vector2 LocalSize;
         public Rect ScreenRect;
 
@@ -204,6 +205,7 @@ namespace MusicHistory.Viewer
                     : 2f * Mathf.Max(.01f, Vector3.Dot(position - origin, forward)) * tanHalf / pixelHeight;
                 Vector2 size = label.LocalSize * (scale / worldPerPixel);
                 Vector3 sp = cam.WorldToScreenPoint(position);
+                label.AnchorScreen = cam.WorldToScreenPoint(anchor);
                 label.ScreenRect = label.Placement switch
                 {
                     LabelPlacement.Below => new Rect(sp.x - size.x * .5f, sp.y - size.y, size.x, size.y),
@@ -257,7 +259,15 @@ namespace MusicHistory.Viewer
                 Rect r = label.ScreenRect;
                 Rect padded = new(r.xMin - LabelPadding, r.yMin - LabelPadding, r.width + 2 * LabelPadding, r.height + 2 * LabelPadding);
                 bool clear = true;
-                if (keepClear != null && label.Priority < FocusPriority)
+                // Its bubble off screen or hidden under a HUD panel: the label would name nothing visible.
+                Vector3 a = label.AnchorScreen;
+                if (label.Anchor != null && (a.z <= 0 || a.x < 0 || a.x > screen.width || a.y < 0 || a.y > screen.height))
+                    clear = false;
+                for (int i = 0; clear && keepClear != null && i < keepClear.Count; i++)
+                    // A bubble's label goes with its bubble under a panel; a fixed label (a year on the
+                    // time axis) when it would show through one.
+                    if (label.Anchor != null ? keepClear[i].Contains(new Vector2(a.x, a.y)) : r.Overlaps(keepClear[i])) clear = false;
+                if (clear && keepClear != null && label.Priority < FocusPriority)
                 {
                     // Under a HUD panel or cut by the screen edge, a label cannot be read.
                     clear = r.xMin >= 0 && r.yMin >= 0 && r.xMax <= screen.width && r.yMax <= screen.height;

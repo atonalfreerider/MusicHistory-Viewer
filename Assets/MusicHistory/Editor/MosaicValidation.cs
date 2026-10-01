@@ -103,8 +103,8 @@ namespace MusicHistory.EditorTools
         // ------------------------------------------------------------------ pure: the contract, the clock, the words
 
         /// <summary>
-        /// A mosaic at 80 BPM (a beat = 0.75 s), 4-bar loops (16 beats, 12 s): 2 original, 3 mosaic and
-        /// 2 harmony loops (84 s; another loop would not fit in 90 s). The target sings 13 notes with two
+        /// A mosaic at 80 BPM (a beat = 0.75 s), 4-bar loops (16 beats, 12 s): 1 original (an intro), 4 mosaic
+        /// and 2 harmony loops (84 s; another loop would not fit in 90 s). The target sings 13 notes with two
         /// rests; three pieces cover [0, 4), [4, 9) and [10, 16) (the beat [9, 10) uncovered): the first
         /// all 4 notes (3 semitones up, 84% speed), the second 3 of 4 (2 down, 112%), the third 4 of 5
         /// (its own extra note; same key, original speed). Two harmony voices: a third above, a fourth below.
@@ -126,7 +126,7 @@ namespace MusicHistory.EditorTools
             b.Append("{\"version\": 1, \"generated_at\": \"2026-10-01T12:00:00Z\", \"frame\": \"C major / A minor (relative normalization, as the pipeline)\", \"mosaics\": [{");
             b.Append($"\"id\": {Q(id)}, \"name\": \"Fixture, Reassembled\", \"title\": {Q(titles[0] + " rebuilt from 3 songs")}, \"target\": {{{Song(0)}}}, ");
             b.Append($"\"file\": {Q(id + "/mix.mp3")}, \"seconds\": 84, \"key\": \"D major\", \"bpm\": 80, \"beats_per_bar\": 4, \"loop_beats\": 16, ");
-            b.Append("\"sections\": [{\"start\": 0, \"end\": 24, \"kind\": \"original\", \"loops\": 2}, {\"start\": 24, \"end\": 60, \"kind\": \"mosaic\", \"loops\": 3}, " +
+            b.Append("\"sections\": [{\"start\": 0, \"end\": 12, \"kind\": \"original\", \"loops\": 1}, {\"start\": 12, \"end\": 60, \"kind\": \"mosaic\", \"loops\": 4}, " +
                      "{\"start\": 60, \"end\": 84, \"kind\": \"harmony\", \"loops\": 2}], ");
             b.Append("\"beats\": [").Append(string.Join(", ", Enumerable.Range(0, 112).Select(i => $"[{Inv(i * .75)}, {i % 16}]"))).Append("], ");
             b.Append("\"chords\": [[0, 4, 0, \"maj\", \"I\"], [4, 8, 9, \"min\", \"vi\"], [8, 12, 5, \"maj\", \"IV\"], [12, 16, 7, \"maj\", \"V\"]], ");
@@ -170,7 +170,7 @@ namespace MusicHistory.EditorTools
                          Math.Abs(m.TimeAtBeat(32) - 24) < 1e-9 && Math.Abs(m.TimeAtBeat(5.5) - 4.125) < 1e-9;
             bool loops = m.LoopAt(23.99) == 1 && m.LoopAt(24) == 2 && m.LoopAt(84) == 6 && Math.Abs(m.LoopBeatAt(24 + 2.25) - 3) < 1e-9 &&
                          Math.Abs(m.LoopStartSeconds(2) - 24) < 1e-9 && Math.Abs(m.LoopStartSeconds(7) - 84) < 1e-9 && m.LoopStartSeconds(0) == 0;
-            bool sections = m.SectionIndexAt(23.99) == 0 && m.SectionIndexAt(24) == 1 && m.SectionIndexAt(83.9) == 2 && m.SectionOfLoop(1) == 0 && m.SectionOfLoop(2) == 1 &&
+            bool sections = m.SectionIndexAt(11.99) == 0 && m.SectionIndexAt(12) == 1 && m.SectionIndexAt(83.9) == 2 && m.SectionOfLoop(0) == 0 && m.SectionOfLoop(1) == 1 &&
                             m.SectionOfLoop(4) == 1 && m.SectionOfLoop(5) == 2 && m.KindOfLoop(3) == MosaicSectionKind.Mosaic && m.KindOfLoop(6) == MosaicSectionKind.Harmony;
             report.Check("mosaic clock: the mix beat (exact on the beats, between them, to the end), loops (a boundary belongs to the next), loop starts, sections by time and by loop",
                 beats && loops && sections, $"beat {m.BeatAt(84):0.###} at the end, loop {m.LoopAt(24)} at 24 s");
@@ -191,12 +191,12 @@ namespace MusicHistory.EditorTools
                          !MelodyScroll.LineAt(line, 38.5, 0, out _);
             List<MosaicTimeline.LineSpec> specs = MosaicTimeline.Lines(m);
             MosaicTimeline.State inPiece = MosaicTimeline.At(m, m.TimeAtBeat(3 * 16 + 5)), inGap = MosaicTimeline.At(m, m.TimeAtBeat(3 * 16 + 9.5)),
-                                 inHarmony = MosaicTimeline.At(m, m.TimeAtBeat(5 * 16 + 2)), inOriginal = MosaicTimeline.At(m, m.TimeAtBeat(1 * 16 + 2));
+                                 inHarmony = MosaicTimeline.At(m, m.TimeAtBeat(5 * 16 + 2)), inOriginal = MosaicTimeline.At(m, m.TimeAtBeat(0 * 16 + 2));
             string Lit(MosaicTimeline.State s) => string.Join(",", specs.Where(x => MosaicTimeline.Playing(x, s)).Select(x => $"{x.Kind}{x.Loop}{(x.Piece >= 0 ? "p" + x.Piece : x.Harmony >= 0 ? "h" + x.Harmony : "")}"));
             bool playing = Lit(inPiece) == "Piece3p1" && Lit(inGap) == "" && inGap.FocusPiece == 1 && inGap.Piece == -1 && Lit(inHarmony) == "Target5,Harmony5h0,Harmony5h1" &&
-                           Lit(inOriginal) == "Target1" && specs.Count(x => x.Guide) == 3;
+                           Lit(inOriginal) == "Target0" && specs.Count(x => x.Guide) == 4;
             report.Check("mosaic lines: notes as steps (joined when they follow, broken at a rest); a line per voice per loop; only the voices sounding in the loop playing are bright, the target a guide in the mosaic loops",
-                steps && specs.Count == 7 + 9 + 4 && playing, $"{line.Count} pieces; {specs.Count} lines; lit: piece [{Lit(inPiece)}] gap [{Lit(inGap)}] harmony [{Lit(inHarmony)}] original [{Lit(inOriginal)}]");
+                steps && specs.Count == 7 + 12 + 4 && playing, $"{line.Count} pieces; {specs.Count} lines; lit: piece [{Lit(inPiece)}] gap [{Lit(inGap)}] harmony [{Lit(inHarmony)}] original [{Lit(inOriginal)}]");
 
             // The words.
             bool words = Mosaic.ShiftText(-3) == "3 semitones down" && Mosaic.ShiftText(1) == "1 semitone up" && Mosaic.ShiftText(0) == "same key" &&
@@ -412,6 +412,13 @@ namespace MusicHistory.EditorTools
                 double dt = .05, worstHead = 0, worstDot = 0, worstLine = 0, worstStep = 0;
                 int dotSamples = 0, lineSamples = 0, litSpanSamples = 0, harmonySamples = 0, gapSamples = 0, ticks = 0;
                 HashSet<int> piecesLit = new();
+                // The camera: one zoom and one rotation for the whole mix once it has flown in; it only
+                // pans, gently, to the songs singing now.
+                double? heldDepth = null;
+                Vector3 heldFwd = default, prevPos = cam.transform.position;
+                double worstZoom = 0, worstTurn = 0, worstSpeed = 0;
+                int sectionSamples = 0, pans = 0;
+                bool wasFlying = d.Flying, sawFlight = d.Flying;
                 double prevBeat = graph.MosaicBeat, prevT = player.CurrentSeconds;
                 ChordRingView ring = hud.Ring;
                 int guard = 0;
@@ -422,6 +429,27 @@ namespace MusicHistory.EditorTools
                     double t = player.CurrentSeconds;
                     MosaicTimeline.State st = MosaicTimeline.At(m, t);
                     if (st.Beat > m.TotalBeats) st = MosaicTimeline.AtBeat(m, m.TotalBeats);
+                    {
+                        Vector3 pos = cam.transform.position, fwd = cam.transform.forward;
+                        // Depth of the graph plane (the target's) along the view: constant while only panning.
+                        double depth = Math.Max(1e-3, Vector3.Dot(target.transform.position - pos, fwd));
+                        if (heldDepth is double hd)
+                        {
+                            worstZoom = Math.Max(worstZoom, Math.Abs(depth - hd) / hd);
+                            worstTurn = Math.Max(worstTurn, Vector3.Angle(heldFwd, fwd));
+                            worstSpeed = Math.Max(worstSpeed, Vector3.Distance(pos, prevPos) / dt / hd);
+                        }
+                        else if (sawFlight && !d.Flying)
+                        {
+                            heldDepth = depth;
+                            heldFwd = fwd;
+                        }
+                        sawFlight |= d.Flying;
+                        if (d.Flying && !wasFlying && heldDepth != null) pans++;
+                        wasFlying = d.Flying;
+                        prevPos = pos;
+                        if (st.Kind == MosaicSectionKind.Mosaic) sectionSamples++;
+                    }
                     if (sectionsVisited.Count == 0 || sectionsVisited[^1] != st.Section) sectionsVisited.Add(st.Section);
                     if (loopsVisited.Count == 0 || loopsVisited[^1] != st.Loop) loopsVisited.Add(st.Loop);
                     // The director follows the mix.
@@ -529,6 +557,16 @@ namespace MusicHistory.EditorTools
                     }
                 }
                 report.Number($"mosaics_{label}_ticks", ticks, "0");
+                report.Number($"mosaics_{label}_camera_zoom_change", worstZoom, "0.00000");
+                report.Number($"mosaics_{label}_camera_turn_deg", worstTurn, "0.000");
+                report.Number($"mosaics_{label}_camera_pan_speed_per_s", worstSpeed, "0.000");
+                report.Number($"mosaics_{label}_camera_pans", pans, "0");
+                report.Check($"{L}: the camera holds one zoom and one rotation for the whole mix once it has flown in (zoom within 1%, turn under 0.5 degrees): it only pans",
+                    heldDepth != null && sectionSamples > 0 && worstZoom < .01 && worstTurn < .5,
+                    $"zoom change {worstZoom * 100:0.000}%, turn {worstTurn:0.000} deg, {pans} pans");
+                report.Check($"{L}: the pans are gentle (under 0.8 of the held distance per second) and at most one per piece or section change",
+                    worstSpeed < .8 && pans <= m.Pieces.Count * m.Loops + m.Sections.Count + m.Harmonies.Count + 2,
+                    $"fastest {worstSpeed:0.000} of the distance per second; {pans} pans");
                 bool order = sectionsVisited.SequenceEqual(Enumerable.Range(0, m.Sections.Count)) && loopsVisited.SequenceEqual(Enumerable.Range(0, m.Loops));
                 report.Check($"{L}: the whole mix on the clock: original → mosaic → harmony, every loop in order, finished once (the tour complete)",
                     order && finished == 1 && d.TourComplete && d.IsTouring && player.Complete,
@@ -569,12 +607,11 @@ namespace MusicHistory.EditorTools
                     mid.Replace("\n", " / "));
                 loader.RefreshView(cam);
                 Rect melodyRect = hud.ScreenRect(graph.PanelRect!, width, height);
-                bool framed = source != null && new[] { source, target }.All(n =>
-                {
-                    Vector3 v = cam.WorldToViewportPoint(n.transform.position);
-                    return v.z > 0 && v.x > .02f && v.x < .98f && v.y * height > melodyRect.yMax && v.y < .98f;
-                });
-                report.Check($"{L}: the camera frames the playing piece's song with the target, above the melody graph", framed && d.MosaicFramed.Contains(target) && (source == null || d.MosaicFramed.Contains(source)));
+                List<SongNode> mosaicSongs = m.Songs.Where(s => s.NodeId > 0).Select(s => loader.NodeById(s.NodeId)).Distinct().ToList();
+                List<string> offFrame = FramingProblems(cam, d.MosaicShotFramed, melodyRect, hud.ScreenRect(hud.WheelRect, width, height), width, height);
+                report.Check($"{L}: the camera frames the singing song (with the target when both fit at the held zoom) on screen, above the melody graph and clear of the wheel",
+                    offFrame.Count == 0 && source != null && d.MosaicShotFramed.Contains(source) && mosaicSongs.All(d.MosaicFramed.Contains) && source.Highlighted,
+                    $"{d.MosaicShotFramed.Count} framed; {string.Join(" | ", offFrame.Take(4))}");
                 CheckLitChords(report, L, loader, cam, width, height, pixels: canonicalShots);
                 CheckWheelPlacement(report, L, loader, width, height);
                 CheckMosaicTitle(report, L, loader, m, width, height);
@@ -654,17 +691,16 @@ namespace MusicHistory.EditorTools
                 IReadOnlyList<Rect> portraitRects = hud.PanelScreenRects(1080, 1920);
                 Rect pr = hud.ScreenRect(graph.PanelRect!, 1080, 1920);
                 LayoutFrame frame = loader.Layout != null ? loader.Layout.Frame : default;
-                report.Check($"{L}: portrait layout: the graph right above the strip (no narration band), clear of every panel; the piece's song and the target framed above it",
+                for (int k = 0; k < 80 && d.Flying; k++) TickMosaic(loader, .05f);
+                loader.RefreshView(cam);
+                List<string> portraitOff = FramingProblems(cam, d.MosaicShotFramed, pr, hud.ScreenRect(hud.WheelRect, 1080, 1920), 1080, 1920);
+                report.Check($"{L}: portrait layout: the graph right above the strip (no narration band), clear of every panel; the singing song framed on screen above it, clear of the wheel",
                     NoOverlap(portraitRects) && portraitRects.Contains(pr) && pr.xMin >= -.5f && pr.xMax <= 1080.5f && pr.yMax <= 1920 &&
-                    frame.Vertical && Mathf.Abs(frame.Melody.yMin - (frame.Strip.yMax + ViewerLayout.BandGap)) < .5f &&
-                    d.MosaicFramed.All(n =>
-                    {
-                        Vector3 v = cam.WorldToViewportPoint(n.transform.position);
-                        return v.z > 0 && v.x > 0f && v.x < 1f && v.y * 1920 > pr.yMax - 1;
-                    }),
-                    $"melody [{pr.xMin:0},{pr.yMin:0} {pr.width:0}x{pr.height:0}]");
+                    frame.Vertical && Mathf.Abs(frame.Melody.yMin - (frame.Strip.yMax + ViewerLayout.BandGap)) < .5f && portraitOff.Count == 0,
+                    $"melody [{pr.xMin:0},{pr.yMin:0} {pr.width:0}x{pr.height:0}]; {string.Join(" | ", portraitOff.Take(4))}");
                 string portraitShot = Shot("mosaic_portrait");
                 Capture(cam, loader, portraitShot, 1080, 1920, out _);
+                CheckLabels(report, loader, $"{label} mosaic portrait");
                 report.Check($"{L}: {Path.GetFileName(portraitShot)} written (1080x1920, mosaic section)", File.Exists(portraitShot));
                 player.Paused = false;
 
@@ -691,6 +727,27 @@ namespace MusicHistory.EditorTools
                 cam.aspect = (float)width / height;
                 d.Exit();
             }
+        }
+
+        /// <summary>
+        /// Songs whose bubble (at its drawn size) is off a <paramref name="width"/> x <paramref name="height"/>
+        /// screen, under the top of <paramref name="melody"/> or over <paramref name="wheel"/> (screen px).
+        /// </summary>
+        static List<string> FramingProblems(Camera cam, IEnumerable<SongNode> nodes, Rect melody, Rect wheel, int width, int height)
+        {
+            List<string> bad = new();
+            cam.aspect = (float)width / height;
+            foreach (SongNode n in nodes)
+            {
+                Vector3 c = cam.WorldToViewportPoint(n.transform.position);
+                Vector3 e = cam.WorldToViewportPoint(n.transform.position + cam.transform.right * n.DisplayRadius);
+                float r = Mathf.Abs(e.x - c.x) * width;
+                Rect disc = new(c.x * width - r, c.y * height - r, 2 * r, 2 * r);
+                if (c.z <= 0 || disc.xMin < 0 || disc.xMax > width || disc.yMax > height) bad.Add($"'{n.Song.Title}' off screen [{disc.xMin:0},{disc.yMin:0} {disc.width:0}]");
+                else if (disc.yMin < melody.yMax) bad.Add($"'{n.Song.Title}' under the melody graph's top ({disc.yMin:0} < {melody.yMax:0})");
+                else if (disc.Overlaps(wheel)) bad.Add($"'{n.Song.Title}' under the wheel");
+            }
+            return bad;
         }
 
         /// <summary>The playing mosaic's name, large and outlined, top left (the legend hidden), clear of every panel.</summary>
